@@ -97,6 +97,9 @@ class ConversionManager: ObservableObject {
     }
     
     func loadFile(from url: URL) async {
+        // Reset file-specific options (trim times, cropping, etc.)
+        advancedOptions = AdvancedOptions()
+        
         do {
             let mediaFile = try await probeService.probe(url: url)
             self.inputFile = mediaFile
@@ -186,6 +189,7 @@ class ConversionManager: ObservableObject {
         inputFile = nil
         conversionJob = nil
         isConverting = false
+        advancedOptions = AdvancedOptions()
     }
     
     private func generateOutputURL(for inputFile: MediaFile) -> URL {
