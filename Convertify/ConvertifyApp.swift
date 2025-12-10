@@ -167,7 +167,10 @@ class ConversionManager: ObservableObject {
             
             NSWorkspace.shared.selectFile(outputURL.path, inFileViewerRootedAtPath: "")
         } catch {
-            conversionJob?.status = .failed(error.localizedDescription)
+            // Don't overwrite .cancelled status (already set by cancelConversion())
+            if conversionJob?.status != .cancelled {
+                conversionJob?.status = .failed(error.localizedDescription)
+            }
         }
         
         isConverting = false
