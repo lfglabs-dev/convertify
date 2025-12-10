@@ -23,8 +23,8 @@ struct FFmpegCommandBuilder {
             return buildImageCommand(job: job)
         }
         
-        // Input options (before -i)
-        args += buildInputOptions(hardwareAcceleration: hardwareAcceleration)
+        // Pre-input options (must appear before -i for hardware decoding)
+        let preInputArgs = buildInputOptions(hardwareAcceleration: hardwareAcceleration)
         
         // Trimming (seeking)
         if let startTime = options.startTime, startTime > 0 {
@@ -71,6 +71,7 @@ struct FFmpegCommandBuilder {
         return FFmpegCommand(
             inputPath: job.inputFile.url.path,
             outputPath: job.outputURL.path,
+            preInputArguments: preInputArgs,
             arguments: args
         )
     }
@@ -146,6 +147,7 @@ struct FFmpegCommandBuilder {
         return FFmpegCommand(
             inputPath: job.inputFile.url.path,
             outputPath: job.outputURL.path,
+            preInputArguments: [], // Image conversion doesn't need hardware decoding
             arguments: args
         )
     }

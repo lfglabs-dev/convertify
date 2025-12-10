@@ -13,10 +13,12 @@ import Combine
 struct FFmpegCommand {
     let inputPath: String
     let outputPath: String
+    let preInputArguments: [String] // Arguments that must appear before -i (e.g., -hwaccel)
     let arguments: [String]
     
     var fullArguments: [String] {
         var args = ["-y"] // Overwrite output
+        args += preInputArguments // Hardware acceleration must come before -i
         args += ["-i", inputPath]
         args += arguments
         args += ["-progress", "pipe:1"] // Progress to stdout
@@ -191,8 +193,8 @@ class FFmpegService: ObservableObject {
                 case "total_size":
                     currentProgress.size = Int64(value) ?? 0
                 case "out_time_ms":
-                    if let microseconds = Double(value) {
-                        currentProgress.currentTime = microseconds / 1_000_000
+                    if let milliseconds = Double(value) {
+                        currentProgress.currentTime = milliseconds / 1_000
                         if duration > 0 {
                             currentProgress.percentage = min(currentProgress.currentTime / duration, 1.0)
                         }

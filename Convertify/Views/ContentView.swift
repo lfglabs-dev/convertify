@@ -1650,6 +1650,7 @@ struct ResizeSection: View {
             cropRight = 100
             cropTop = 0
             cropBottom = 100
+            syncDragStartValues()
             syncCropToManager()
             return
         }
@@ -1671,7 +1672,16 @@ struct ResizeSection: View {
             cropLeft += diff / 2
             cropRight -= diff / 2
         }
+        syncDragStartValues()
         syncCropToManager()
+    }
+    
+    // Sync drag start values to current crop values (prevents jumps when dragging after preset changes)
+    private func syncDragStartValues() {
+        dragStartLeft = cropLeft
+        dragStartRight = cropRight
+        dragStartTop = cropTop
+        dragStartBottom = cropBottom
     }
 }
 
