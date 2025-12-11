@@ -1503,7 +1503,11 @@ struct CropPreviewSection: View {
                             }
                         }
                     }
-                    .onAppear { setupKeyMonitor() }
+                    .onAppear {
+                        setupKeyMonitor()
+                        // Initialize aspect ratio for ratio-lock feature
+                        syncDragStartValues()
+                    }
                     .onDisappear { removeKeyMonitor() }
                     } else {
                         RoundedRectangle(cornerRadius: 8)
@@ -1828,11 +1832,6 @@ struct CropPreviewSection: View {
                 let dx = value.translation.width / size.width * 100
                 let dy = value.translation.height / size.height * 100
                 
-                // Store aspect ratio at start of drag for ratio-lock
-                if value.translation == .zero {
-                    dragStartAspectRatio = currentCropAspectRatio
-                }
-                
                 // Apply drag based on edge type
                 applyDrag(edge: edge, dx: dx, dy: dy)
                 
@@ -2116,6 +2115,7 @@ struct CropPreviewSection: View {
         dragStartRight = cropRight
         dragStartTop = cropTop
         dragStartBottom = cropBottom
+        dragStartAspectRatio = currentCropAspectRatio
     }
 }
 
