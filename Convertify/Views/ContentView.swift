@@ -1358,6 +1358,9 @@ struct CropPreviewSection: View {
     // Aspect ratio at drag start (for ratio-lock)
     @State private var dragStartAspectRatio: CGFloat = 1.0
     
+    // Track if we've synced drag start values for the current drag gesture
+    @State private var hasSyncedForCurrentDrag: Bool = false
+    
     // Key monitor for tracking modifier keys
     @State private var keyMonitor: Any?
     
@@ -1829,6 +1832,13 @@ struct CropPreviewSection: View {
     private func makeDragGesture(edge: CropEdge, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
+                // Sync drag start values at the beginning of each new drag
+                // This captures the current aspect ratio for the ratio-lock feature
+                if !hasSyncedForCurrentDrag {
+                    syncDragStartValues()
+                    hasSyncedForCurrentDrag = true
+                }
+                
                 let dx = value.translation.width / size.width * 100
                 let dy = value.translation.height / size.height * 100
                 
@@ -1838,7 +1848,7 @@ struct CropPreviewSection: View {
                 syncCropToManager()
             }
             .onEnded { _ in
-                syncDragStartValues()
+                hasSyncedForCurrentDrag = false
                 syncCropToManager()
             }
     }
