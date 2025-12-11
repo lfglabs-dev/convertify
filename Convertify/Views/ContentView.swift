@@ -8,6 +8,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import AVFoundation
 
 struct ContentView: View {
     @EnvironmentObject var manager: ConversionManager
@@ -1356,6 +1357,9 @@ struct CropPreviewSection: View {
     // Aspect ratio at drag start (for ratio-lock)
     @State private var dragStartAspectRatio: CGFloat = 1.0
     
+    // Key monitor for tracking modifier keys
+    @State private var keyMonitor: Any?
+    
     // Handle padding to prevent clipping
     private let handlePadding: CGFloat = 10
     
@@ -1499,6 +1503,7 @@ struct CropPreviewSection: View {
                         }
                     }
                     .onAppear { setupKeyMonitor() }
+                    .onDisappear { removeKeyMonitor() }
                     } else {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(.primary.opacity(0.1))
@@ -1708,19 +1713,60 @@ struct CropPreviewSection: View {
     // MARK: - Key Monitor
     
     private func setupKeyMonitor() {
-        NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+        // Only add if not already monitoring
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
             isShiftPressed = event.modifierFlags.contains(.shift)
             isCommandPressed = event.modifierFlags.contains(.command)
             return event
         }
     }
     
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+    
     private func loadImage() {
         guard let url = imageURL else { return }
+        
+        // Check if this is a video file by extension
+        let videoExtensions = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv", "flv", "3gp", "ogv"]
+        let ext = url.pathExtension.lowercased()
+        let isVideo = videoExtensions.contains(ext)
+        
         DispatchQueue.global(qos: .userInitiated).async {
-            if let image = NSImage(contentsOf: url) {
+            var image: NSImage?
+            
+            if isVideo {
+                // Generate thumbnail from video using AVFoundation
+                let asset = AVAsset(url: url)
+                let imageGenerator = AVAssetImageGenerator(asset: asset)
+                imageGenerator.appliesPreferredTrackTransform = true
+                imageGenerator.maximumSize = CGSize(width: 1280, height: 1280) // Reasonable preview size
+                
+                let time = CMTime(seconds: 0, preferredTimescale: 600)
+                
+                do {
+                    let cgImage = try imageGenerator.copyCGImage(at: time, actualTime: nil)
+                    image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                } catch {
+                    // If thumbnail generation fails at 0s, try a slightly later time
+                    let laterTime = CMTime(seconds: 1, preferredTimescale: 600)
+                    if let cgImage = try? imageGenerator.copyCGImage(at: laterTime, actualTime: nil) {
+                        image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                    }
+                }
+            } else {
+                // Load image directly
+                image = NSImage(contentsOf: url)
+            }
+            
+            if let finalImage = image {
                 DispatchQueue.main.async {
-                    self.loadedImage = image
+                    self.loadedImage = finalImage
                 }
             }
         }
