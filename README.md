@@ -45,16 +45,6 @@ Convertify includes several specialized tools:
 | MP4, MOV, MKV | MP3, AAC, FLAC | JPEG, PNG, WebP |
 | WebM, AVI, GIF | WAV, OGG, M4A | HEIC, TIFF, BMP, ICO |
 
-## Quality Presets
-
-Three presets. No knob-twiddling required.
-
-- **Fast** — Quick encode, smaller file
-- **Balanced** — Good quality, reasonable speed
-- **Quality** — Best output, takes longer
-
-Need more control? Advanced options are there if you want them.
-
 ## Requirements
 
 - macOS 14.0+
@@ -138,6 +128,6 @@ convertify/
 
 ## Support
 
-Convertify is free to build and use. If you find it useful and want to support development, you can purchase it on the **Mac App Store** — same app, automatic updates, and a nice way to say thanks.
+Convertify is free to build and use. If you find it useful and want to support development, you can purchase it on the **Mac App Store**: same app, automatic updates, and a nice way to say thanks.
 
 <!-- [Download on the Mac App Store](https://apps.apple.com/app/convertify) -->
