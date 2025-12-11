@@ -342,6 +342,7 @@ struct ContentView: View {
             manager.qualityPreset = .fast
         case .discord:
             selectedTool = .compress
+            manager.outputFormat = .mp4
             manager.qualityPreset = .fast
         case .web:
             selectedTool = .convert
@@ -2230,6 +2231,9 @@ struct OutputSizeSection: View {
                     .foregroundColor(.secondary)
                 }
             }
+        }
+        .onAppear {
+            selectedPreset = manager.advancedOptions.resolutionOverride
         }
     }
 }
