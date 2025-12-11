@@ -104,6 +104,7 @@ struct ContentView: View {
                         tool: tool,
                         isSelected: selectedTool == tool
                     ) {
+                        guard selectedTool != tool else { return }
                         withAnimation(.spring(response: 0.25)) {
                             selectedTool = tool
                             if manager.inputFile != nil {
