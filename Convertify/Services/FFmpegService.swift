@@ -192,9 +192,9 @@ class FFmpegService: ObservableObject {
                     currentProgress.bitrate = value
                 case "total_size":
                     currentProgress.size = Int64(value) ?? 0
-                case "out_time_ms":
-                    if let milliseconds = Double(value) {
-                        currentProgress.currentTime = milliseconds / 1_000
+                case "out_time_us":
+                    if let microseconds = Double(value) {
+                        currentProgress.currentTime = microseconds / 1_000_000
                         if duration > 0 {
                             currentProgress.percentage = min(currentProgress.currentTime / duration, 1.0)
                         }
