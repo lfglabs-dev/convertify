@@ -129,7 +129,7 @@ enum OutputFormat: String, CaseIterable, Identifiable {
         switch self {
         case .mp4, .mov, .m4a, .mkv: return "aac"
         case .webm, .ogg: return "libopus"
-        case .avi: return "mp3"
+        case .avi: return "libmp3lame"
         case .gif: return "none"
         case .mp3: return "libmp3lame"
         case .aac: return "aac"
