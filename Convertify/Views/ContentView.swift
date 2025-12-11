@@ -1243,8 +1243,14 @@ struct GifOptionsSection: View {
     @State private var fps: Double = 15
     @State private var width: Double = 480
     
+    private var effectiveDuration: TimeInterval {
+        let startTime = manager.advancedOptions.startTime ?? 0
+        let endTime = manager.advancedOptions.endTime ?? duration
+        return max(0, endTime - startTime)
+    }
+    
     private var estimatedFrames: Int {
-        Int(duration * fps)
+        Int(effectiveDuration * fps)
     }
     
     var body: some View {
@@ -1301,7 +1307,7 @@ struct GifOptionsSection: View {
                             Text("Duration")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
-                            Text(formatDuration(duration))
+                            Text(formatDuration(effectiveDuration))
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         }
                     }

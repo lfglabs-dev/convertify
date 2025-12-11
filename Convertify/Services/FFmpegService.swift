@@ -222,12 +222,16 @@ class FFmpegService: ObservableObject {
             }
         }
         
-        try process.run()
-        
-        // Wait for completion
-        await withCheckedContinuation { continuation in
+        // Wait for completion - set terminationHandler before run() to avoid race condition
+        try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { _ in
                 continuation.resume()
+            }
+            
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
         

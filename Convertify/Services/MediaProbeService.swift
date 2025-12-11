@@ -59,9 +59,7 @@ class MediaProbeService {
         process.standardOutput = pipe
         process.standardError = Pipe()
         
-        try process.run()
-        
-        return await withCheckedContinuation { continuation in
+        return try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { _ in
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 
@@ -71,6 +69,12 @@ class MediaProbeService {
                 }
                 
                 continuation.resume(returning: json)
+            }
+            
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
     }

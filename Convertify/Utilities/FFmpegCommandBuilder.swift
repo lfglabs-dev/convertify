@@ -25,15 +25,16 @@ struct FFmpegCommandBuilder {
             return buildImageCommand(job: job)
         }
         
-        // Pre-input options (must appear before -i for hardware decoding)
-        let preInputArgs = buildInputOptions(hardwareAcceleration: hardwareAcceleration)
+        // Pre-input options (must appear before -i for hardware decoding and fast seeking)
+        var preInputArgs = buildInputOptions(hardwareAcceleration: hardwareAcceleration)
         
-        // Trimming (seeking)
+        // Trimming: -ss BEFORE -i enables fast input seeking (seeks to nearest keyframe)
+        // Without this, FFmpeg decodes from the beginning which is extremely slow for long videos
         if let startTime = options.startTime, startTime > 0 {
-            args += ["-ss", formatTime(startTime)]
+            preInputArgs += ["-ss", formatTime(startTime)]
         }
         
-        // Duration / end time
+        // Duration / end time: -t AFTER -i ensures exact duration from seek point
         if let endTime = options.endTime {
             let duration = endTime - (options.startTime ?? 0)
             if duration > 0 {
