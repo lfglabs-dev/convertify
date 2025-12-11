@@ -95,7 +95,10 @@ struct FFmpegCommandBuilder {
             let cropHeight = Int(Double(res.height) * (options.cropBottom - options.cropTop) / 100)
             let cropX = Int(Double(res.width) * options.cropLeft / 100)
             let cropY = Int(Double(res.height) * options.cropTop / 100)
-            filters.append("crop=\(cropWidth):\(cropHeight):\(cropX):\(cropY)")
+            // Ensure dimensions are divisible by 2 (required for HEIC/HEVC output)
+            let adjustedWidth = (cropWidth / 2) * 2
+            let adjustedHeight = (cropHeight / 2) * 2
+            filters.append("crop=\(adjustedWidth):\(adjustedHeight):\(cropX):\(cropY)")
         }
         
         // Resolution scaling
