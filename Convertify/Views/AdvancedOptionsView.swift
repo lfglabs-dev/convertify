@@ -173,6 +173,9 @@ struct TrimmingRow: View {
             }
         }
         .animation(.spring(response: 0.3), value: enableTrimming)
+        .onAppear {
+            enableTrimming = manager.advancedOptions.hasTrimming
+        }
     }
 }
 

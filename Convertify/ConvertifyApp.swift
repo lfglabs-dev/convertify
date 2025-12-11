@@ -156,9 +156,17 @@ class ConversionManager: ObservableObject {
         )
         
         do {
-            let duration = inputFile.duration > 0 ? inputFile.duration : 1
+            // Calculate effective duration accounting for trimming
+            let effectiveDuration: TimeInterval
+            if advancedOptions.hasTrimming {
+                let startTime = advancedOptions.startTime ?? 0
+                let endTime = advancedOptions.endTime ?? inputFile.duration
+                effectiveDuration = max(endTime - startTime, 1)
+            } else {
+                effectiveDuration = inputFile.duration > 0 ? inputFile.duration : 1
+            }
             
-            for try await progress in ffmpegService.execute(command: command, duration: duration) {
+            for try await progress in ffmpegService.execute(command: command, duration: effectiveDuration) {
                 conversionJob?.progress = progress.percentage
                 conversionJob?.status = .converting
                 conversionJob?.currentTime = progress.currentTime
