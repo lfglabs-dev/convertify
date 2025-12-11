@@ -412,9 +412,9 @@ enum ConversionTool: String, CaseIterable, Identifiable {
     var dropTitle: String {
         switch self {
         case .convert: return "Drop a file to convert"
-        case .compress: return "Drop a file to compress"
+        case .compress: return "Drop a video to compress"
         case .extractAudio: return "Drop a video to extract audio"
-        case .trim: return "Drop a file to trim"
+        case .trim: return "Drop a video to trim"
         case .toGif: return "Drop a video to make GIF"
         case .resize: return "Drop a file to resize or crop"
         }
