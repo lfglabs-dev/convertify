@@ -18,8 +18,10 @@ struct FFmpegCommandBuilder {
         _ = job.qualityPreset // Used in sub-functions via job parameter
         let options = job.advancedOptions
         
-        // Handle image conversions separately
-        if format.isImageFormat || inputFile.isImage {
+        // Handle image-to-image conversions separately
+        // Only use buildImageCommand when BOTH input is an image AND output is an image format
+        // This allows image inputs to be converted to video formats (GIF, MP4, etc.) via the regular pipeline
+        if format.isImageFormat && inputFile.isImage {
             return buildImageCommand(job: job)
         }
         

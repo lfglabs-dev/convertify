@@ -972,6 +972,16 @@ struct CompressOptionsSection: View {
     @EnvironmentObject var manager: ConversionManager
     @State private var targetSize: Double = 50 // MB
     
+    private var inputSizeMB: Double {
+        guard let fileSize = manager.inputFile?.fileSize, fileSize > 0 else { return 500 }
+        return Double(fileSize) / (1024 * 1024)
+    }
+    
+    private var maxTargetSize: Double {
+        // Cap slider to input file size (minimum 1 MB for very small files)
+        max(1, inputSizeMB)
+    }
+    
     private var estimatedBitrate: Int {
         // Calculate bitrate from target size and duration
         guard let duration = manager.inputFile?.duration, duration > 0 else { return 2000 }
@@ -983,8 +993,14 @@ struct CompressOptionsSection: View {
     }
     
     private var compressionRatio: Double {
-        guard let inputSize = manager.inputFile?.fileSize, inputSize > 0 else { return 1.0 }
-        return (targetSize * 1024 * 1024) / Double(inputSize)
+        guard inputSizeMB > 0 else { return 1.0 }
+        return targetSize / inputSizeMB
+    }
+    
+    private var reductionPercentage: Int {
+        // Clamp to 0-99% range for sensible display
+        let reduction = (1 - compressionRatio) * 100
+        return max(0, min(99, Int(reduction)))
     }
     
     var body: some View {
@@ -1001,7 +1017,7 @@ struct CompressOptionsSection: View {
                             .foregroundColor(Color(hex: "F59E0B"))
                     }
                     
-                    Slider(value: $targetSize, in: 1...500, step: 1)
+                    Slider(value: $targetSize, in: 1...maxTargetSize, step: 1)
                         .tint(Color(hex: "F59E0B"))
                         .onChange(of: targetSize) { _, newValue in
                             manager.advancedOptions.targetSizeMB = newValue
@@ -1026,9 +1042,9 @@ struct CompressOptionsSection: View {
                         Text("Reduction")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
-                        Text("\(Int((1 - compressionRatio) * 100))%")
+                        Text(reductionPercentage > 0 ? "\(reductionPercentage)%" : "—")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(compressionRatio < 1 ? Color(hex: "22C55E") : .secondary)
+                            .foregroundColor(reductionPercentage > 0 ? Color(hex: "22C55E") : .secondary)
                     }
                 }
                 
@@ -1038,11 +1054,8 @@ struct CompressOptionsSection: View {
             }
         }
         .onAppear {
-            // Initialize from input file size if available
-            if let fileSize = manager.inputFile?.fileSize {
-                let sizeMB = Double(fileSize) / (1024 * 1024)
-                targetSize = min(max(1, sizeMB * 0.5), 500) // Start at 50% of original
-            }
+            // Initialize to 50% of input file size (clamped to valid range)
+            targetSize = min(max(1, inputSizeMB * 0.5), maxTargetSize)
             manager.advancedOptions.targetSizeMB = targetSize
             manager.advancedOptions.videoBitrate = .custom
             manager.advancedOptions.customVideoBitrate = estimatedBitrate
