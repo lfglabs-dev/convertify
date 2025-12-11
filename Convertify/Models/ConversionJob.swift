@@ -30,9 +30,16 @@ struct ConversionJob: Identifiable {
         return String(format: "%.1fx", speed)
     }
     
+    /// The actual duration being converted, accounting for trim settings
+    var effectiveDuration: TimeInterval {
+        let start = advancedOptions.startTime ?? 0
+        let end = advancedOptions.endTime ?? inputFile.duration
+        return max(0, end - start)
+    }
+    
     var estimatedTimeRemaining: TimeInterval? {
         guard let speed = speed, speed > 0, progress > 0 else { return nil }
-        let remaining = inputFile.duration * (1 - progress)
+        let remaining = effectiveDuration * (1 - progress)
         return remaining / speed
     }
     
