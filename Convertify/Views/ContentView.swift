@@ -303,13 +303,21 @@ struct ContentView: View {
             GifOptionsSection(duration: file.duration)
             
         case .resize:
-            // Resize needs output format for video, or image format for images
+            // Order: Crop → Format → Size
+            Group {
+                // 1. Crop preview first
+                CropPreviewSection(originalResolution: file.resolution, imageURL: file.url)
+                
+                // 2. Then output format
             if file.isImage {
                 OutputSection(detectedType: .image)
             } else {
                 VideoOutputFormatSection()
             }
-            ResizeSection(originalResolution: file.resolution, imageURL: file.url)
+                
+                // 3. Finally output size (based on cropped dimensions)
+                OutputSizeSection(originalResolution: file.resolution)
+            }
         }
     }
     
@@ -1314,16 +1322,16 @@ struct GifOptionsSection: View {
     }
 }
 
-// MARK: - Resize & Crop Section
+// MARK: - Crop Preview Section
 
-struct ResizeSection: View {
+struct CropPreviewSection: View {
     @EnvironmentObject var manager: ConversionManager
     let originalResolution: Resolution?
     let imageURL: URL?
     
-    @State private var selectedPreset: ResolutionOverride = .original
     @State private var selectedAspect: AspectRatio = .original
     @State private var loadedImage: NSImage?
+    @State private var containerWidth: CGFloat = 300
     
     // Interactive crop controls (0-100 percentage)
     @State private var cropLeft: Double = 0
@@ -1337,22 +1345,59 @@ struct ResizeSection: View {
     @State private var dragStartTop: Double = 0
     @State private var dragStartBottom: Double = 100
     
+    // Modifier keys state (live tracking for visual feedback)
+    @State private var isShiftPressed: Bool = false
+    @State private var isCommandPressed: Bool = false
+    
+    // Toggle states for modifier behaviors (clickable buttons)
+    @State private var lockRatioEnabled: Bool = false
+    @State private var fromCenterEnabled: Bool = false
+    
+    // Aspect ratio at drag start (for ratio-lock)
+    @State private var dragStartAspectRatio: CGFloat = 1.0
+    
+    // Handle padding to prevent clipping
+    private let handlePadding: CGFloat = 10
+    
+    // Calculate the ideal preview height based on image aspect ratio
+    private var previewHeight: CGFloat {
+        guard originalAspectRatio > 0 else { return containerWidth }
+        let heightForAspect = containerWidth / originalAspectRatio
+        return min(heightForAspect, containerWidth)
+    }
+    
+    // Current crop aspect ratio
+    private var currentCropAspectRatio: CGFloat {
+        let width = cropRight - cropLeft
+        let height = cropBottom - cropTop
+        guard height > 0 else { return 1 }
+        return (width / height) * originalAspectRatio
+    }
+    
+    // Effective modifier states (keyboard OR toggle button)
+    private var effectiveLockRatio: Bool { isShiftPressed || lockRatioEnabled }
+    private var effectiveFromCenter: Bool { isCommandPressed || fromCenterEnabled }
+    
     var body: some View {
-        VStack(spacing: 20) {
-            // Crop Preview
             OptionCard(title: "Crop Preview — Drag edges to adjust") {
-                VStack(spacing: 16) {
+            VStack(spacing: 12) {
                     // Visual preview with actual image and draggable edges
                     if let image = loadedImage {
-                        GeometryReader { geo in
-                            let cropRect = calculateInteractiveCropRect(in: geo.size)
-                            
+                    GeometryReader { outerGeo in
+                        let insetSize = CGSize(
+                            width: outerGeo.size.width - handlePadding * 2,
+                            height: outerGeo.size.height - handlePadding * 2
+                        )
+                        let cropRect = calculateInteractiveCropRect(in: insetSize)
+                        
+                        ZStack {
+                            // Image container (inset)
                             ZStack {
                                 // Full image (dimmed)
                                 Image(nsImage: image)
                                     .resizable()
                                     .aspectRatio(contentMode: .fill)
-                                    .frame(width: geo.size.width, height: geo.size.height)
+                                    .frame(width: insetSize.width, height: insetSize.height)
                                     .clipped()
                                     .opacity(0.35)
                                 
@@ -1360,7 +1405,7 @@ struct ResizeSection: View {
                                 Image(nsImage: image)
                                     .resizable()
                                     .aspectRatio(contentMode: .fill)
-                                    .frame(width: geo.size.width, height: geo.size.height)
+                                    .frame(width: insetSize.width, height: insetSize.height)
                                     .clipped()
                                     .mask {
                                         Rectangle()
@@ -1391,65 +1436,131 @@ struct ResizeSection: View {
                                     path.addLine(to: CGPoint(x: startX + cropRect.width, y: startY + thirdH * 2))
                                 }
                                 .stroke(Color.white.opacity(0.4), lineWidth: 0.5)
+                            }
+                            .frame(width: insetSize.width, height: insetSize.height)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .position(x: outerGeo.size.width / 2, y: outerGeo.size.height / 2)
                                 
-                                // Edge handles - Left
+                            // Edge handles
                                 edgeHandle(width: 16, height: max(40, cropRect.height * 0.4))
-                                    .position(x: cropRect.minX, y: cropRect.midY)
-                                    .gesture(makeDragGesture(edge: .left, size: geo.size))
+                                .position(x: handlePadding + cropRect.minX, y: handlePadding + cropRect.midY)
+                                .gesture(makeDragGesture(edge: .left, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeLeftRight) }
                                 
-                                // Edge handles - Right
                                 edgeHandle(width: 16, height: max(40, cropRect.height * 0.4))
-                                    .position(x: cropRect.maxX, y: cropRect.midY)
-                                    .gesture(makeDragGesture(edge: .right, size: geo.size))
+                                .position(x: handlePadding + cropRect.maxX, y: handlePadding + cropRect.midY)
+                                .gesture(makeDragGesture(edge: .right, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeLeftRight) }
                                 
-                                // Edge handles - Top
                                 edgeHandle(width: max(40, cropRect.width * 0.4), height: 16)
-                                    .position(x: cropRect.midX, y: cropRect.minY)
-                                    .gesture(makeDragGesture(edge: .top, size: geo.size))
+                                .position(x: handlePadding + cropRect.midX, y: handlePadding + cropRect.minY)
+                                .gesture(makeDragGesture(edge: .top, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeUpDown) }
                                 
-                                // Edge handles - Bottom
                                 edgeHandle(width: max(40, cropRect.width * 0.4), height: 16)
-                                    .position(x: cropRect.midX, y: cropRect.maxY)
-                                    .gesture(makeDragGesture(edge: .bottom, size: geo.size))
+                                .position(x: handlePadding + cropRect.midX, y: handlePadding + cropRect.maxY)
+                                .gesture(makeDragGesture(edge: .bottom, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeUpDown) }
                                 
                                 // Corner handles
                                 cornerHandle()
-                                    .position(x: cropRect.minX, y: cropRect.minY)
-                                    .gesture(makeDragGesture(edge: .topLeft, size: geo.size))
+                                .position(x: handlePadding + cropRect.minX, y: handlePadding + cropRect.minY)
+                                .gesture(makeDragGesture(edge: .topLeft, size: insetSize))
                                 
                                 cornerHandle()
-                                    .position(x: cropRect.maxX, y: cropRect.minY)
-                                    .gesture(makeDragGesture(edge: .topRight, size: geo.size))
+                                .position(x: handlePadding + cropRect.maxX, y: handlePadding + cropRect.minY)
+                                .gesture(makeDragGesture(edge: .topRight, size: insetSize))
                                 
                                 cornerHandle()
-                                    .position(x: cropRect.minX, y: cropRect.maxY)
-                                    .gesture(makeDragGesture(edge: .bottomLeft, size: geo.size))
+                                .position(x: handlePadding + cropRect.minX, y: handlePadding + cropRect.maxY)
+                                .gesture(makeDragGesture(edge: .bottomLeft, size: insetSize))
                                 
                                 cornerHandle()
-                                    .position(x: cropRect.maxX, y: cropRect.maxY)
-                                    .gesture(makeDragGesture(edge: .bottomRight, size: geo.size))
+                                .position(x: handlePadding + cropRect.maxX, y: handlePadding + cropRect.maxY)
+                                .gesture(makeDragGesture(edge: .bottomRight, size: insetSize))
                             }
                         }
                         .aspectRatio(originalAspectRatio, contentMode: .fit)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 200)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(height: previewHeight + handlePadding * 2)
                         .overlay {
                             RoundedRectangle(cornerRadius: 8)
                                 .strokeBorder(.white.opacity(0.1), lineWidth: 1)
+                            .padding(handlePadding)
+                    }
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.onAppear {
+                                containerWidth = geo.size.width - handlePadding * 2
+                            }
+                            .onChange(of: geo.size.width) { _, newWidth in
+                                containerWidth = newWidth - handlePadding * 2
+                            }
                         }
+                    }
+                    .onAppear { setupKeyMonitor() }
                     } else {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(.primary.opacity(0.1))
-                            .frame(height: 200)
+                        .frame(height: previewHeight)
                             .overlay {
                                 ProgressView()
                                     .scaleEffect(0.8)
                             }
+                        .background {
+                            GeometryReader { geo in
+                                Color.clear.onAppear {
+                                    containerWidth = geo.size.width
+                                }
+                            }
+                        }
+                }
+                
+                // Modifier toggle buttons (below canvas)
+                HStack(spacing: 12) {
+                    // Lock Ratio toggle
+                    Button {
+                        withAnimation(.spring(response: 0.2)) {
+                            lockRatioEnabled.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("⇧")
+                                .font(.system(size: 11, weight: .medium))
+                            Text("Lock Ratio")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(effectiveLockRatio ? .white : .secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background {
+                            Capsule()
+                                .fill(effectiveLockRatio ? Color(hex: "3B82F6") : .primary.opacity(0.05))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    
+                    // From Center toggle
+                    Button {
+                        withAnimation(.spring(response: 0.2)) {
+                            fromCenterEnabled.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("⌘")
+                                .font(.system(size: 11, weight: .medium))
+                            Text("From Center")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(effectiveFromCenter ? .white : .secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background {
+                            Capsule()
+                                .fill(effectiveFromCenter ? Color(hex: "3B82F6") : .primary.opacity(0.05))
+                        }
+                    }
+                    .buttonStyle(.plain)
                     }
                     
                     // Aspect ratio selector
@@ -1475,13 +1586,9 @@ struct ResizeSection: View {
                         }
                     }
                     
-                    // Crop info
+                // Editable crop values inline
                     if let res = originalResolution {
-                        let cropWidth = Int(Double(res.width) * (cropRight - cropLeft) / 100)
-                        let cropHeight = Int(Double(res.height) * (cropBottom - cropTop) / 100)
-                        Text("Output: \(cropWidth) × \(cropHeight)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
+                    cropValuesRow(resolution: res)
                     }
                 }
             }
@@ -1490,44 +1597,121 @@ struct ResizeSection: View {
             }
             .onChange(of: imageURL) { _, _ in
                 loadImage()
+        }
+    }
+    
+    // MARK: - Inline Crop Values Row
+    
+    @ViewBuilder
+    private func cropValuesRow(resolution: Resolution) -> some View {
+        HStack(spacing: 8) {
+            // X offset
+            HStack(spacing: 3) {
+                Text("X")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                TextField("", value: Binding(
+                    get: { Int(Double(resolution.width) * cropLeft / 100) },
+                    set: { newVal in
+                        cropLeft = clamp(Double(newVal) / Double(resolution.width) * 100, min: 0, max: cropRight - 10)
+                        syncDragStartValues()
+                        syncCropToManager()
+                    }
+                ), format: .number)
+                .textFieldStyle(.plain)
+                .font(.system(size: 10, design: .monospaced))
+                .frame(width: 40)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.05))
+                .cornerRadius(3)
             }
             
-            // Resolution presets
-            OptionCard(title: "Output Size") {
-                VStack(alignment: .leading, spacing: 12) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 75, maximum: 95), spacing: 8)], spacing: 8) {
-                        ForEach(ResolutionOverride.allCases) { preset in
-                            Button {
-                                withAnimation(.spring(response: 0.2)) {
-                                    selectedPreset = preset
-                                    manager.advancedOptions.resolutionOverride = preset
-                                }
-                            } label: {
-                                Text(preset.rawValue)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(selectedPreset == preset ? .white : .primary.opacity(0.8))
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 32)
-                                    .background {
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(selectedPreset == preset ? Color(hex: "3B82F6") : .primary.opacity(0.05))
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                        }
+            // Y offset
+            HStack(spacing: 3) {
+                Text("Y")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                TextField("", value: Binding(
+                    get: { Int(Double(resolution.height) * cropTop / 100) },
+                    set: { newVal in
+                        cropTop = clamp(Double(newVal) / Double(resolution.height) * 100, min: 0, max: cropBottom - 10)
+                        syncDragStartValues()
+                        syncCropToManager()
                     }
-                    
-                    if let original = originalResolution {
-                        HStack(spacing: 6) {
-                            Image(systemName: "info.circle")
-                                .font(.system(size: 10))
-                            Text("Original: \(original.description)")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundColor(.secondary)
-                    }
-                }
+                ), format: .number)
+                .textFieldStyle(.plain)
+                .font(.system(size: 10, design: .monospaced))
+                .frame(width: 40)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.05))
+                .cornerRadius(3)
             }
+            
+            Text("→")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary.opacity(0.5))
+            
+            // Width
+            HStack(spacing: 3) {
+                Text("W")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                TextField("", value: Binding(
+                    get: { Int(Double(resolution.width) * (cropRight - cropLeft) / 100) },
+                    set: { newVal in
+                        let newWidth = clamp(Double(newVal) / Double(resolution.width) * 100, min: 10, max: 100 - cropLeft)
+                        cropRight = cropLeft + newWidth
+                        syncDragStartValues()
+                        syncCropToManager()
+                    }
+                ), format: .number)
+                .textFieldStyle(.plain)
+                .font(.system(size: 10, design: .monospaced))
+                .frame(width: 44)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.05))
+                .cornerRadius(3)
+            }
+            
+            Text("×")
+                                .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+            
+            // Height
+            HStack(spacing: 3) {
+                Text("H")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                TextField("", value: Binding(
+                    get: { Int(Double(resolution.height) * (cropBottom - cropTop) / 100) },
+                    set: { newVal in
+                        let newHeight = clamp(Double(newVal) / Double(resolution.height) * 100, min: 10, max: 100 - cropTop)
+                        cropBottom = cropTop + newHeight
+                        syncDragStartValues()
+                        syncCropToManager()
+                    }
+                ), format: .number)
+                .textFieldStyle(.plain)
+                .font(.system(size: 10, design: .monospaced))
+                .frame(width: 44)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.05))
+                .cornerRadius(3)
+            }
+        }
+    }
+    
+    // MARK: - Key Monitor
+    
+    private func setupKeyMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            isShiftPressed = event.modifierFlags.contains(.shift)
+            isCommandPressed = event.modifierFlags.contains(.command)
+            return event
         }
     }
     
@@ -1597,37 +1781,243 @@ struct ResizeSection: View {
                 let dx = value.translation.width / size.width * 100
                 let dy = value.translation.height / size.height * 100
                 
-                switch edge {
-                case .left:
-                    cropLeft = clamp(dragStartLeft + dx, min: 0, max: cropRight - 10)
-                case .right:
-                    cropRight = clamp(dragStartRight + dx, min: cropLeft + 10, max: 100)
-                case .top:
-                    cropTop = clamp(dragStartTop + dy, min: 0, max: cropBottom - 10)
-                case .bottom:
-                    cropBottom = clamp(dragStartBottom + dy, min: cropTop + 10, max: 100)
-                case .topLeft:
-                    cropLeft = clamp(dragStartLeft + dx, min: 0, max: cropRight - 10)
-                    cropTop = clamp(dragStartTop + dy, min: 0, max: cropBottom - 10)
-                case .topRight:
-                    cropRight = clamp(dragStartRight + dx, min: cropLeft + 10, max: 100)
-                    cropTop = clamp(dragStartTop + dy, min: 0, max: cropBottom - 10)
-                case .bottomLeft:
-                    cropLeft = clamp(dragStartLeft + dx, min: 0, max: cropRight - 10)
-                    cropBottom = clamp(dragStartBottom + dy, min: cropTop + 10, max: 100)
-                case .bottomRight:
-                    cropRight = clamp(dragStartRight + dx, min: cropLeft + 10, max: 100)
-                    cropBottom = clamp(dragStartBottom + dy, min: cropTop + 10, max: 100)
+                // Store aspect ratio at start of drag for ratio-lock
+                if value.translation == .zero {
+                    dragStartAspectRatio = currentCropAspectRatio
                 }
+                
+                // Apply drag based on edge type
+                applyDrag(edge: edge, dx: dx, dy: dy)
+                
                 syncCropToManager()
             }
             .onEnded { _ in
-                // Store current values for next drag
-                dragStartLeft = cropLeft
-                dragStartRight = cropRight
-                dragStartTop = cropTop
-                dragStartBottom = cropBottom
+                syncDragStartValues()
                 syncCropToManager()
+            }
+    }
+    
+    private func applyDrag(edge: CropEdge, dx: Double, dy: Double) {
+        let fromCenter = effectiveFromCenter
+        let lockRatio = effectiveLockRatio
+        
+        // Calculate center of current crop
+        let centerX = (dragStartLeft + dragStartRight) / 2
+        let centerY = (dragStartTop + dragStartBottom) / 2
+        
+        // When both modifiers are active, handle them together properly
+        if fromCenter && lockRatio {
+            applyDragCenteredWithRatio(edge: edge, dx: dx, dy: dy, centerX: centerX, centerY: centerY)
+            return
+        }
+                
+                switch edge {
+                case .left:
+            if fromCenter {
+                cropLeft = clamp(dragStartLeft + dx, min: 0, max: centerX - 5)
+                cropRight = clamp(dragStartRight - dx, min: centerX + 5, max: 100)
+            } else {
+                    cropLeft = clamp(dragStartLeft + dx, min: 0, max: cropRight - 10)
+            }
+            if lockRatio { adjustHeightForRatio(fromCenter: fromCenter) }
+            
+                case .right:
+            if fromCenter {
+                cropRight = clamp(dragStartRight + dx, min: centerX + 5, max: 100)
+                cropLeft = clamp(dragStartLeft - dx, min: 0, max: centerX - 5)
+            } else {
+                    cropRight = clamp(dragStartRight + dx, min: cropLeft + 10, max: 100)
+            }
+            if lockRatio { adjustHeightForRatio(fromCenter: fromCenter) }
+            
+                case .top:
+            if fromCenter {
+                cropTop = clamp(dragStartTop + dy, min: 0, max: centerY - 5)
+                cropBottom = clamp(dragStartBottom - dy, min: centerY + 5, max: 100)
+            } else {
+                    cropTop = clamp(dragStartTop + dy, min: 0, max: cropBottom - 10)
+            }
+            if lockRatio { adjustWidthForRatio(fromCenter: fromCenter) }
+            
+                case .bottom:
+            if fromCenter {
+                cropBottom = clamp(dragStartBottom + dy, min: centerY + 5, max: 100)
+                cropTop = clamp(dragStartTop - dy, min: 0, max: centerY - 5)
+            } else {
+                    cropBottom = clamp(dragStartBottom + dy, min: cropTop + 10, max: 100)
+            }
+            if lockRatio { adjustWidthForRatio(fromCenter: fromCenter) }
+            
+                case .topLeft:
+            if fromCenter {
+                cropLeft = clamp(dragStartLeft + dx, min: 0, max: centerX - 5)
+                cropRight = clamp(dragStartRight - dx, min: centerX + 5, max: 100)
+                cropTop = clamp(dragStartTop + dy, min: 0, max: centerY - 5)
+                cropBottom = clamp(dragStartBottom - dy, min: centerY + 5, max: 100)
+            } else {
+                    cropLeft = clamp(dragStartLeft + dx, min: 0, max: cropRight - 10)
+                    cropTop = clamp(dragStartTop + dy, min: 0, max: cropBottom - 10)
+            }
+            if lockRatio { adjustForCornerRatio(dx: dx, dy: dy, anchorRight: !fromCenter, anchorBottom: !fromCenter) }
+            
+                case .topRight:
+            if fromCenter {
+                cropRight = clamp(dragStartRight + dx, min: centerX + 5, max: 100)
+                cropLeft = clamp(dragStartLeft - dx, min: 0, max: centerX - 5)
+                cropTop = clamp(dragStartTop + dy, min: 0, max: centerY - 5)
+                cropBottom = clamp(dragStartBottom - dy, min: centerY + 5, max: 100)
+            } else {
+                    cropRight = clamp(dragStartRight + dx, min: cropLeft + 10, max: 100)
+                    cropTop = clamp(dragStartTop + dy, min: 0, max: cropBottom - 10)
+            }
+            if lockRatio { adjustForCornerRatio(dx: dx, dy: dy, anchorRight: fromCenter, anchorBottom: !fromCenter) }
+            
+                case .bottomLeft:
+            if fromCenter {
+                cropLeft = clamp(dragStartLeft + dx, min: 0, max: centerX - 5)
+                cropRight = clamp(dragStartRight - dx, min: centerX + 5, max: 100)
+                cropBottom = clamp(dragStartBottom + dy, min: centerY + 5, max: 100)
+                cropTop = clamp(dragStartTop - dy, min: 0, max: centerY - 5)
+            } else {
+                    cropLeft = clamp(dragStartLeft + dx, min: 0, max: cropRight - 10)
+                    cropBottom = clamp(dragStartBottom + dy, min: cropTop + 10, max: 100)
+            }
+            if lockRatio { adjustForCornerRatio(dx: dx, dy: dy, anchorRight: !fromCenter, anchorBottom: fromCenter) }
+            
+                case .bottomRight:
+            if fromCenter {
+                cropRight = clamp(dragStartRight + dx, min: centerX + 5, max: 100)
+                cropLeft = clamp(dragStartLeft - dx, min: 0, max: centerX - 5)
+                cropBottom = clamp(dragStartBottom + dy, min: centerY + 5, max: 100)
+                cropTop = clamp(dragStartTop - dy, min: 0, max: centerY - 5)
+            } else {
+                    cropRight = clamp(dragStartRight + dx, min: cropLeft + 10, max: 100)
+                    cropBottom = clamp(dragStartBottom + dy, min: cropTop + 10, max: 100)
+                }
+            if lockRatio { adjustForCornerRatio(dx: dx, dy: dy, anchorRight: fromCenter, anchorBottom: fromCenter) }
+        }
+    }
+    
+    // Handle both modifiers together - resize from center while maintaining ratio
+    private func applyDragCenteredWithRatio(edge: CropEdge, dx: Double, dy: Double, centerX: Double, centerY: Double) {
+        // Determine the dominant axis movement
+        let absDx = abs(dx)
+        let absDy = abs(dy)
+        
+        // For corners and edges, use the dominant direction
+        let useHorizontal: Bool
+        switch edge {
+        case .left, .right: useHorizontal = true
+        case .top, .bottom: useHorizontal = false
+        case .topLeft, .topRight, .bottomLeft, .bottomRight: useHorizontal = absDx >= absDy
+        }
+        
+        if useHorizontal {
+            // Calculate new width from horizontal movement
+            let delta: Double
+            switch edge {
+            case .left, .topLeft, .bottomLeft: delta = -dx
+            default: delta = dx
+            }
+            
+            let halfWidth = (dragStartRight - dragStartLeft) / 2 + delta
+            let newLeft = clamp(centerX - halfWidth, min: 0, max: centerX - 5)
+            let newRight = clamp(centerX + halfWidth, min: centerX + 5, max: 100)
+            
+            cropLeft = newLeft
+            cropRight = newRight
+            
+            // Adjust height to maintain ratio, centered
+            let currentWidth = cropRight - cropLeft
+            let targetHeight = currentWidth * originalAspectRatio / dragStartAspectRatio
+            let halfHeight = targetHeight / 2
+            
+            cropTop = clamp(centerY - halfHeight, min: 0, max: centerY - 5)
+            cropBottom = clamp(centerY + halfHeight, min: centerY + 5, max: 100)
+        } else {
+            // Calculate new height from vertical movement
+            let delta: Double
+            switch edge {
+            case .top, .topLeft, .topRight: delta = -dy
+            default: delta = dy
+            }
+            
+            let halfHeight = (dragStartBottom - dragStartTop) / 2 + delta
+            let newTop = clamp(centerY - halfHeight, min: 0, max: centerY - 5)
+            let newBottom = clamp(centerY + halfHeight, min: centerY + 5, max: 100)
+            
+            cropTop = newTop
+            cropBottom = newBottom
+            
+            // Adjust width to maintain ratio, centered
+            let currentHeight = cropBottom - cropTop
+            let targetWidth = currentHeight * dragStartAspectRatio / originalAspectRatio
+            let halfWidth = targetWidth / 2
+            
+            cropLeft = clamp(centerX - halfWidth, min: 0, max: centerX - 5)
+            cropRight = clamp(centerX + halfWidth, min: centerX + 5, max: 100)
+        }
+    }
+    
+    // Adjust height to maintain aspect ratio (when width changed)
+    private func adjustHeightForRatio(fromCenter: Bool) {
+        let currentWidth = cropRight - cropLeft
+        let targetHeight = currentWidth * originalAspectRatio / dragStartAspectRatio
+        
+        if fromCenter {
+            let centerY = (dragStartTop + dragStartBottom) / 2
+            let halfHeight = targetHeight / 2
+            cropTop = clamp(centerY - halfHeight, min: 0, max: 90)
+            cropBottom = clamp(centerY + halfHeight, min: 10, max: 100)
+        } else {
+            let centerY = (cropTop + cropBottom) / 2
+            let halfHeight = targetHeight / 2
+            cropTop = clamp(centerY - halfHeight, min: 0, max: 90)
+            cropBottom = clamp(centerY + halfHeight, min: 10, max: 100)
+        }
+    }
+    
+    // Adjust width to maintain aspect ratio (when height changed)
+    private func adjustWidthForRatio(fromCenter: Bool) {
+        let currentHeight = cropBottom - cropTop
+        let targetWidth = currentHeight * dragStartAspectRatio / originalAspectRatio
+        
+        if fromCenter {
+            let centerX = (dragStartLeft + dragStartRight) / 2
+            let halfWidth = targetWidth / 2
+            cropLeft = clamp(centerX - halfWidth, min: 0, max: 90)
+            cropRight = clamp(centerX + halfWidth, min: 10, max: 100)
+        } else {
+            let centerX = (cropLeft + cropRight) / 2
+            let halfWidth = targetWidth / 2
+            cropLeft = clamp(centerX - halfWidth, min: 0, max: 90)
+            cropRight = clamp(centerX + halfWidth, min: 10, max: 100)
+        }
+    }
+    
+    // Adjust for corner drag with ratio lock
+    private func adjustForCornerRatio(dx: Double, dy: Double, anchorRight: Bool, anchorBottom: Bool) {
+        let absDx = abs(dx)
+        let absDy = abs(dy)
+        
+        if absDx > absDy {
+            let currentWidth = cropRight - cropLeft
+            let targetHeight = currentWidth * originalAspectRatio / dragStartAspectRatio
+            
+            if anchorBottom {
+                cropTop = clamp(cropBottom - targetHeight, min: 0, max: cropBottom - 10)
+            } else {
+                cropBottom = clamp(cropTop + targetHeight, min: cropTop + 10, max: 100)
+            }
+        } else {
+            let currentHeight = cropBottom - cropTop
+            let targetWidth = currentHeight * dragStartAspectRatio / originalAspectRatio
+            
+            if anchorRight {
+                cropLeft = clamp(cropRight - targetWidth, min: 0, max: cropRight - 10)
+            } else {
+                cropRight = clamp(cropLeft + targetWidth, min: cropLeft + 10, max: 100)
+            }
             }
     }
     
@@ -1660,13 +2050,11 @@ struct ResizeSection: View {
         let currentAspect = (currentWidth / currentHeight) * originalAspectRatio
         
         if ratio > currentAspect {
-            // Need to crop height
             let newHeight = currentWidth * originalAspectRatio / ratio
             let diff = currentHeight - newHeight
             cropTop += diff / 2
             cropBottom -= diff / 2
         } else {
-            // Need to crop width
             let newWidth = currentHeight * ratio / originalAspectRatio
             let diff = currentWidth - newWidth
             cropLeft += diff / 2
@@ -1676,12 +2064,75 @@ struct ResizeSection: View {
         syncCropToManager()
     }
     
-    // Sync drag start values to current crop values (prevents jumps when dragging after preset changes)
     private func syncDragStartValues() {
         dragStartLeft = cropLeft
         dragStartRight = cropRight
         dragStartTop = cropTop
         dragStartBottom = cropBottom
+    }
+}
+
+// MARK: - Output Size Section
+
+struct OutputSizeSection: View {
+    @EnvironmentObject var manager: ConversionManager
+    let originalResolution: Resolution?
+    
+    @State private var selectedPreset: ResolutionOverride = .original
+    
+    // Computed cropped dimensions based on manager's crop settings
+    private var croppedWidth: Int {
+        guard let res = originalResolution else { return 0 }
+        return Int(Double(res.width) * (manager.advancedOptions.cropRight - manager.advancedOptions.cropLeft) / 100)
+    }
+    
+    private var croppedHeight: Int {
+        guard let res = originalResolution else { return 0 }
+        return Int(Double(res.height) * (manager.advancedOptions.cropBottom - manager.advancedOptions.cropTop) / 100)
+    }
+    
+    var body: some View {
+        OptionCard(title: "Output Size") {
+            VStack(alignment: .leading, spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 75, maximum: 95), spacing: 8)], spacing: 8) {
+                    ForEach(ResolutionOverride.allCases) { preset in
+                        Button {
+                            withAnimation(.spring(response: 0.2)) {
+                                selectedPreset = preset
+                                manager.advancedOptions.resolutionOverride = preset
+                            }
+                        } label: {
+                            Text(preset.rawValue)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(selectedPreset == preset ? .white : .primary.opacity(0.8))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 32)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(selectedPreset == preset ? Color(hex: "3B82F6") : .primary.opacity(0.05))
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                
+                // Show cropped dimensions (or original if no cropping)
+                if originalResolution != nil {
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 10))
+                        if manager.advancedOptions.hasCropping {
+                            Text("Original: \(croppedWidth.formatted())×\(croppedHeight.formatted()) (cropped)")
+                                .font(.system(size: 11))
+                        } else if let res = originalResolution {
+                            Text("Original: \(res.description)")
+                                .font(.system(size: 11))
+                        }
+                    }
+                    .foregroundColor(.secondary)
+                }
+            }
+        }
     }
 }
 
