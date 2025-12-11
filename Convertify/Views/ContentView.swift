@@ -1607,10 +1607,32 @@ struct CropPreviewSection: View {
             }
             .onAppear {
                 loadImage()
+                syncCropFromManager()
             }
             .onChange(of: imageURL) { _, _ in
                 loadImage()
-        }
+                resetCropState()
+            }
+    }
+    
+    /// Reset crop state to defaults when a new file is loaded
+    private func resetCropState() {
+        cropLeft = 0
+        cropRight = 100
+        cropTop = 0
+        cropBottom = 100
+        selectedAspect = .original
+        syncDragStartValues()
+        syncCropToManager()
+    }
+    
+    /// Sync local crop state from manager (for initialization)
+    private func syncCropFromManager() {
+        cropLeft = manager.advancedOptions.cropLeft
+        cropRight = manager.advancedOptions.cropRight
+        cropTop = manager.advancedOptions.cropTop
+        cropBottom = manager.advancedOptions.cropBottom
+        syncDragStartValues()
     }
     
     // MARK: - Inline Crop Values Row
