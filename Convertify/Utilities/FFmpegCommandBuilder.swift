@@ -275,8 +275,28 @@ struct FFmpegCommandBuilder {
         let fps = options.gifFps > 0 ? options.gifFps : 15
         let scale = options.gifWidth > 0 ? options.gifWidth : (options.resolutionOverride.resolution?.width ?? 480)
         
+        // Build filter chain: crop (if any) -> fps -> scale -> split -> palette
+        var filterChain: [String] = []
+        
+        // Cropping (if any)
+        if options.hasCropping, let res = job.inputFile.resolution {
+            let cropWidth = Int(Double(res.width) * (options.cropRight - options.cropLeft) / 100)
+            let cropHeight = Int(Double(res.height) * (options.cropBottom - options.cropTop) / 100)
+            let cropX = Int(Double(res.width) * options.cropLeft / 100)
+            let cropY = Int(Double(res.height) * options.cropTop / 100)
+            // Ensure dimensions are divisible by 2
+            let adjustedWidth = (cropWidth / 2) * 2
+            let adjustedHeight = (cropHeight / 2) * 2
+            filterChain.append("crop=\(adjustedWidth):\(adjustedHeight):\(cropX):\(cropY)")
+        }
+        
+        // FPS and scale
+        filterChain.append("fps=\(fps)")
+        filterChain.append("scale=\(scale):-1:flags=lanczos")
+        
         // Generate palette and apply it in one pass
-        let filterComplex = "[0:v] fps=\(fps),scale=\(scale):-1:flags=lanczos,split [a][b];[a] palettegen=stats_mode=single [p];[b][p] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+        let preFilters = filterChain.joined(separator: ",")
+        let filterComplex = "[0:v] \(preFilters),split [a][b];[a] palettegen=stats_mode=single [p];[b][p] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
         
         args += ["-filter_complex", filterComplex]
         args += ["-loop", "0"] // Loop forever

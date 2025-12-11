@@ -213,12 +213,15 @@ class FFmpegService: ObservableObject {
             }
         }
         
-        // Capture stderr for error messages
+        // Capture stderr for error messages with thread-safe access
+        let stderrQueue = DispatchQueue(label: "com.convertify.stderr")
         var stderrOutput = ""
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if let output = String(data: data, encoding: .utf8) {
-                stderrOutput += output
+                stderrQueue.sync {
+                    stderrOutput += output
+                }
             }
         }
         
@@ -231,6 +234,8 @@ class FFmpegService: ObservableObject {
             do {
                 try process.run()
             } catch {
+                // Clear the termination handler before resuming to prevent potential double-resume
+                process.terminationHandler = nil
                 continuation.resume(throwing: error)
             }
         }
@@ -238,6 +243,9 @@ class FFmpegService: ObservableObject {
         // Clean up handlers
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
+        
+        // Synchronize to ensure any in-progress handler has completed
+        let finalStderrOutput = stderrQueue.sync { stderrOutput }
         
         currentProcess = nil
         
@@ -247,7 +255,7 @@ class FFmpegService: ObservableObject {
         }
         
         if process.terminationStatus != 0 {
-            throw FFmpegError.conversionFailed(stderrOutput)
+            throw FFmpegError.conversionFailed(finalStderrOutput)
         }
     }
 }

@@ -74,6 +74,8 @@ class MediaProbeService {
             do {
                 try process.run()
             } catch {
+                // Clear the termination handler before resuming to prevent potential double-resume
+                process.terminationHandler = nil
                 continuation.resume(throwing: error)
             }
         }
