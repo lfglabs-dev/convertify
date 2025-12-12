@@ -102,6 +102,7 @@ final class GifTranscoder {
     private var inputFormatContext: UnsafeMutablePointer<AVFormatContext>?
     private var outputFormatContext: UnsafeMutablePointer<AVFormatContext>?
     private var decoderContext: UnsafeMutablePointer<AVCodecContext>?
+    private var encoderContext: UnsafeMutablePointer<AVCodecContext>?
     private var filterGraph: UnsafeMutablePointer<AVFilterGraph>?
     private var bufferSrcContext: UnsafeMutablePointer<AVFilterContext>?
     private var bufferSinkContext: UnsafeMutablePointer<AVFilterContext>?
@@ -286,25 +287,49 @@ final class GifTranscoder {
             throw FFmpegKitError.outputFormatNotFound("gif")
         }
         
-        // Create output stream
-        guard let encoder = avcodec_find_encoder(AV_CODEC_ID_GIF),
-              let outStream = avformat_new_stream(outCtx, encoder) else {
+        // Find GIF encoder
+        guard let encoder = avcodec_find_encoder(AV_CODEC_ID_GIF) else {
             throw FFmpegKitError.codecNotFound("gif encoder")
         }
         
-        // Configure
-        let codecpar = outStream.pointee.codecpar!
-        codecpar.pointee.codec_type = AVMEDIA_TYPE_VIDEO
-        codecpar.pointee.codec_id = AV_CODEC_ID_GIF
-        codecpar.pointee.width = Int32(width)
+        // Create output stream
+        guard let outStream = avformat_new_stream(outCtx, encoder) else {
+            throw FFmpegKitError.allocationFailed("output stream")
+        }
         
-        // Calculate height from aspect ratio (scale filter will use width:-1 which means auto-height)
-        // Get the output height from the buffersink after filter graph is configured
+        // Allocate encoder context
+        guard let encCtx = avcodec_alloc_context3(encoder) else {
+            throw FFmpegKitError.allocationFailed("encoder context")
+        }
+        encoderContext = encCtx
+        
+        // Get the output dimensions from the buffersink after filter graph is configured
         guard let sinkCtx = bufferSinkContext else {
             throw FFmpegKitError.filterGraphFailed("buffer sink not initialized")
         }
+        let outputWidth = av_buffersink_get_w(sinkCtx)
         let outputHeight = av_buffersink_get_h(sinkCtx)
-        codecpar.pointee.height = outputHeight
+        
+        // Configure encoder
+        encCtx.pointee.width = outputWidth
+        encCtx.pointee.height = outputHeight
+        encCtx.pointee.time_base = AVRational(num: 1, den: Int32(fps))
+        encCtx.pointee.framerate = AVRational(num: Int32(fps), den: 1)
+        encCtx.pointee.pix_fmt = AV_PIX_FMT_PAL8  // GIF uses palette-indexed format
+        
+        // Open encoder
+        ret = avcodec_open2(encCtx, encoder, nil)
+        guard ret >= 0 else {
+            throw FFmpegKitError.codecOpenFailed("gif encoder", ret)
+        }
+        
+        // Copy encoder parameters to stream
+        ret = avcodec_parameters_from_context(outStream.pointee.codecpar, encCtx)
+        guard ret >= 0 else {
+            throw FFmpegKitError.allocationFailed("codec parameters from context")
+        }
+        
+        outStream.pointee.time_base = encCtx.pointee.time_base
         
         // Open output file
         if outCtx.pointee.oformat.pointee.flags & AVFMT_NOFILE == 0 {
@@ -323,6 +348,7 @@ final class GifTranscoder {
     private func processFrames(progress: @escaping (TranscodingProgress) -> Void) throws {
         guard let inCtx = inputFormatContext,
               let decCtx = decoderContext,
+              let encCtx = encoderContext,
               let srcCtx = bufferSrcContext,
               let sinkCtx = bufferSinkContext,
               let outCtx = outputFormatContext else { return }
@@ -330,11 +356,13 @@ final class GifTranscoder {
         var packet = av_packet_alloc()
         var frame = av_frame_alloc()
         var filteredFrame = av_frame_alloc()
+        var outPacket = av_packet_alloc()
         
         defer {
             av_packet_free(&packet)
             av_frame_free(&frame)
             av_frame_free(&filteredFrame)
+            av_packet_free(&outPacket)
         }
         
         let duration = Double(inCtx.pointee.duration) / Double(AV_TIME_BASE)
@@ -379,18 +407,23 @@ final class GifTranscoder {
                     
                     defer { av_frame_unref(filteredFrame) }
                     
-                    // Write frame as GIF
-                    var outPacket = av_packet_alloc()
-                    defer { av_packet_free(&outPacket) }
+                    // Set frame PTS for encoder
+                    filteredFrame!.pointee.pts = Int64(frameCount)
                     
-                    // For GIF, we write raw frames
-                    outPacket?.pointee.data = filteredFrame!.pointee.data.0
-                    outPacket?.pointee.size = Int32(filteredFrame!.pointee.linesize.0 * filteredFrame!.pointee.height)
-                    outPacket?.pointee.pts = Int64(frameCount)
-                    outPacket?.pointee.dts = Int64(frameCount)
-                    outPacket?.pointee.stream_index = 0
+                    // Encode frame using GIF encoder
+                    var encRet = avcodec_send_frame(encCtx, filteredFrame)
+                    if encRet < 0 { continue }
                     
-                    av_interleaved_write_frame(outCtx, outPacket)
+                    while true {
+                        encRet = avcodec_receive_packet(encCtx, outPacket)
+                        if encRet < 0 { break }
+                        
+                        defer { av_packet_unref(outPacket) }
+                        
+                        outPacket!.pointee.stream_index = 0
+                        av_interleaved_write_frame(outCtx, outPacket)
+                    }
+                    
                     frameCount += 1
                 }
             }
@@ -406,6 +439,16 @@ final class GifTranscoder {
             }
         }
         
+        // Flush encoder
+        avcodec_send_frame(encCtx, nil)
+        while true {
+            let ret = avcodec_receive_packet(encCtx, outPacket)
+            if ret < 0 { break }
+            defer { av_packet_unref(outPacket) }
+            outPacket!.pointee.stream_index = 0
+            av_interleaved_write_frame(outCtx, outPacket)
+        }
+        
         // Write trailer
         av_write_trailer(outCtx)
         
@@ -417,6 +460,9 @@ final class GifTranscoder {
     private func cleanup() {
         if filterGraph != nil {
             avfilter_graph_free(&filterGraph)
+        }
+        if encoderContext != nil {
+            avcodec_free_context(&encoderContext)
         }
         if decoderContext != nil {
             avcodec_free_context(&decoderContext)

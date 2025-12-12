@@ -73,7 +73,17 @@ struct FFmpegCommand {
                 config.stripAudio = true
             case "-t":
                 if i + 1 < arguments.count {
-                    config.endTime = parseTimeString(arguments[i + 1])
+                    // -t specifies duration, not end time
+                    // Store duration temporarily, will calculate endTime after parsing startTime
+                    let duration = parseTimeString(arguments[i + 1])
+                    // If we already have startTime, calculate actual endTime
+                    // Otherwise, endTime = duration (assuming start from 0)
+                    if let startTime = config.startTime {
+                        config.endTime = startTime + duration
+                    } else {
+                        // Will be recalculated after parsing preInputArguments if -ss is found
+                        config.endTime = duration
+                    }
                     i += 1
                 }
             case "-vf":
@@ -100,7 +110,15 @@ struct FFmpegCommand {
         // Parse pre-input arguments for start time
         for j in 0..<preInputArguments.count {
             if preInputArguments[j] == "-ss" && j + 1 < preInputArguments.count {
-                config.startTime = parseTimeString(preInputArguments[j + 1])
+                let startTime = parseTimeString(preInputArguments[j + 1])
+                config.startTime = startTime
+                
+                // If we already parsed -t (duration) and stored it in endTime,
+                // we need to recalculate endTime = startTime + duration
+                if let currentEndTime = config.endTime {
+                    // currentEndTime was set from -t duration before we knew startTime
+                    config.endTime = startTime + currentEndTime
+                }
             }
         }
         

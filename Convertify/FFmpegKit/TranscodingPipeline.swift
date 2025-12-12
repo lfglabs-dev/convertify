@@ -740,19 +740,24 @@ final class TranscodingPipeline {
             
             // Apply filters if present
             if videoFilterGraph != nil {
-                try filterVideoFrame(frame, output: filteredFrame)
-                try encodeVideoFrame(filteredFrame)
-                av_frame_unref(filteredFrame)
+                let hasOutput = try filterVideoFrame(frame, output: filteredFrame)
+                if hasOutput {
+                    try encodeVideoFrame(filteredFrame)
+                    av_frame_unref(filteredFrame)
+                }
             } else {
                 try encodeVideoFrame(frame)
             }
         }
     }
     
+    /// Filter a video frame through the filter graph
+    /// - Returns: true if an output frame was produced, false if EAGAIN (filter needs more input)
+    @discardableResult
     private func filterVideoFrame(_ input: UnsafeMutablePointer<AVFrame>,
-                                  output: UnsafeMutablePointer<AVFrame>) throws {
+                                  output: UnsafeMutablePointer<AVFrame>) throws -> Bool {
         guard let srcCtx = videoBufferSrcContext,
-              let sinkCtx = videoBufferSinkContext else { return }
+              let sinkCtx = videoBufferSinkContext else { return false }
         
         var ret = av_buffersrc_add_frame_flags(srcCtx, input, Int32(AV_BUFFERSRC_FLAG_KEEP_REF))
         guard ret >= 0 else {
@@ -761,9 +766,11 @@ final class TranscodingPipeline {
         
         ret = av_buffersink_get_frame(sinkCtx, output)
         guard ret >= 0 else {
-            if isAVErrorEAGAIN(ret) { return }
+            if isAVErrorEAGAIN(ret) { return false }
             throw FFmpegKitError.filterGraphFailed("failed to get frame from filter")
         }
+        
+        return true
     }
     
     private func encodeVideoFrame(_ frame: UnsafeMutablePointer<AVFrame>?) throws {
