@@ -2,7 +2,7 @@
 //  HardwareDetector.swift
 //  Convertify
 //
-//  Detects hardware acceleration capabilities (VideoToolbox)
+//  Detects hardware acceleration capabilities using FFmpegKit
 //
 
 import Foundation
@@ -51,38 +51,20 @@ class HardwareDetector {
     
     private var cachedCapabilities: HardwareAcceleration?
     
-    private var ffmpegPath: String {
-        let paths = [
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/usr/bin/ffmpeg"
-        ]
-        
-        for path in paths {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        
-        return "ffmpeg"
-    }
-    
-    /// Detect hardware acceleration capabilities
+    /// Detect hardware acceleration capabilities using FFmpegKit
     func detectCapabilities() -> HardwareAcceleration {
         if let cached = cachedCapabilities {
             return cached
         }
         
-        let encoders = detectEncoders()
-        let decoders = detectDecoders()
+        // Use our HardwareAccelerationManager to detect capabilities
+        let isVTAvailable = HardwareAccelerationManager.isVideoToolboxAvailable
+        let encoders = HardwareAccelerationManager.supportedEncoders
+        let decoders = HardwareAccelerationManager.supportedDecoders
         let gpuName = detectGPU()
         
-        // Check for VideoToolbox support
-        let hasVT = encoders.contains("h264_videotoolbox") || 
-                    encoders.contains("hevc_videotoolbox")
-        
         let capabilities = HardwareAcceleration(
-            hasVideoToolbox: hasVT,
+            hasVideoToolbox: isVTAvailable,
             supportedEncoders: encoders,
             supportedDecoders: decoders,
             gpuName: gpuName
@@ -122,118 +104,13 @@ class HardwareDetector {
     
     // MARK: - Private Methods
     
-    private func detectEncoders() -> [String] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
-        process.arguments = ["-encoders", "-hide_banner"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
-            
-            return parseEncoders(output)
-        } catch {
-            return []
-        }
-    }
-    
-    private func detectDecoders() -> [String] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
-        process.arguments = ["-decoders", "-hide_banner"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
-            
-            return parseDecoders(output)
-        } catch {
-            return []
-        }
-    }
-    
-    private func parseEncoders(_ output: String) -> [String] {
-        var encoders: [String] = []
-        
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            // Look for VideoToolbox encoders and common video encoders
-            if trimmed.contains("videotoolbox") ||
-               trimmed.contains("libx264") ||
-               trimmed.contains("libx265") ||
-               trimmed.contains("libvpx") {
-                
-                // Parse encoder name from line like "V..... h264_videotoolbox"
-                let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
-                if parts.count >= 2 {
-                    let encoder = String(parts[1])
-                    encoders.append(encoder)
-                }
-            }
-        }
-        
-        return encoders
-    }
-    
-    private func parseDecoders(_ output: String) -> [String] {
-        var decoders: [String] = []
-        
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            if trimmed.contains("videotoolbox") ||
-               trimmed.hasPrefix("V") {
-                let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
-                if parts.count >= 2 {
-                    let decoder = String(parts[1])
-                    decoders.append(decoder)
-                }
-            }
-        }
-        
-        return decoders
-    }
-    
     private func detectGPU() -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-        process.arguments = ["SPDisplaysDataType", "-json"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let displays = json["SPDisplaysDataType"] as? [[String: Any]],
-                  let first = displays.first,
-                  let name = first["sppci_model"] as? String else {
-                return nil
-            }
-            
-            return name
-        } catch {
-            return nil
-        }
+        // Use IOKit to get GPU info (works in sandbox)
+        // For now, return a generic name based on architecture
+        #if arch(arm64)
+        return "Apple Silicon GPU"
+        #else
+        return "Intel GPU"
+        #endif
     }
 }
-

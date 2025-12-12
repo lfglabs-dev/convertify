@@ -9,9 +9,15 @@ let package = Package(
     products: [
         .executable(name: "Convertify", targets: ["Convertify"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/kingslay/FFmpegKit.git", from: "6.1.0")
+    ],
     targets: [
         .executableTarget(
             name: "Convertify",
+            dependencies: [
+                .product(name: "FFmpegKit", package: "FFmpegKit")
+            ],
             path: "Convertify",
             exclude: [
                 "Info.plist",

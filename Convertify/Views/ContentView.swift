@@ -1217,7 +1217,6 @@ struct TrimSection: View {
                 endPercent = (end / duration) * 100
             } else {
                 endPercent = 100
-                manager.advancedOptions.endTime = duration
             }
         }
     }
