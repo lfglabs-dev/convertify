@@ -284,6 +284,7 @@ class FFmpegService: ObservableObject {
         var width = 480
         var startTime: Double? = nil
         var endTime: Double? = nil
+        var crop: (x: Int, y: Int, width: Int, height: Int)? = nil
         
         // Parse from video filters
         for arg in command.arguments {
@@ -297,6 +298,16 @@ class FFmpegService: ObservableObject {
                 if let match = arg.range(of: "scale=(\\d+)", options: .regularExpression) {
                     let widthStr = String(arg[match]).replacingOccurrences(of: "scale=", with: "")
                     width = Int(widthStr) ?? 480
+                }
+            }
+            // Parse crop parameter: crop=W:H:X:Y
+            if arg.contains("crop=") {
+                if let match = arg.range(of: "crop=(\\d+):(\\d+):(\\d+):(\\d+)", options: .regularExpression) {
+                    let cropStr = String(arg[match]).replacingOccurrences(of: "crop=", with: "")
+                    let parts = cropStr.split(separator: ":").compactMap { Int($0) }
+                    if parts.count == 4 {
+                        crop = (x: parts[2], y: parts[3], width: parts[0], height: parts[1])
+                    }
                 }
             }
         }
@@ -324,6 +335,7 @@ class FFmpegService: ObservableObject {
             outputPath: command.outputPath,
             fps: fps,
             width: width,
+            crop: crop,
             startTime: startTime,
             endTime: endTime
         )

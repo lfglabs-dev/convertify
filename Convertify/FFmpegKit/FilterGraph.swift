@@ -669,22 +669,37 @@ final class ImageTranscoder {
                     }
                     
                     // Perform the conversion
-                    sws_scale(
-                        swsContext,
-                        frame!.pointee.data.map { $0 }.withUnsafeBufferPointer { ptr in
-                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
-                        },
-                        frame!.pointee.linesize.map { $0 }.withUnsafeBufferPointer { ptr in
-                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
-                        },
-                        0, frame!.pointee.height,
-                        convFrame.pointee.data.map { $0 }.withUnsafeBufferPointer { ptr in
-                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
-                        },
-                        convFrame.pointee.linesize.map { $0 }.withUnsafeBufferPointer { ptr in
-                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
+                    // Use withUnsafePointer to get stable pointers to the frame data/linesize tuples
+                    withUnsafePointer(to: &frame!.pointee.data) { srcDataPtr in
+                        withUnsafePointer(to: &frame!.pointee.linesize) { srcLinesizePtr in
+                            withUnsafePointer(to: &convFrame.pointee.data) { dstDataPtr in
+                                withUnsafePointer(to: &convFrame.pointee.linesize) { dstLinesizePtr in
+                                    // Cast tuple pointers to the expected array pointer types
+                                    let srcData = UnsafeMutablePointer(mutating: srcDataPtr).withMemoryRebound(
+                                        to: UnsafePointer<UInt8>?.self, capacity: 8
+                                    ) { $0 }
+                                    let srcLinesize = UnsafeMutablePointer(mutating: srcLinesizePtr).withMemoryRebound(
+                                        to: Int32.self, capacity: 8
+                                    ) { $0 }
+                                    let dstData = UnsafeMutablePointer(mutating: dstDataPtr).withMemoryRebound(
+                                        to: UnsafeMutablePointer<UInt8>?.self, capacity: 8
+                                    ) { $0 }
+                                    let dstLinesize = UnsafeMutablePointer(mutating: dstLinesizePtr).withMemoryRebound(
+                                        to: Int32.self, capacity: 8
+                                    ) { $0 }
+                                    
+                                    sws_scale(
+                                        swsContext,
+                                        srcData,
+                                        srcLinesize,
+                                        0, frame!.pointee.height,
+                                        dstData,
+                                        dstLinesize
+                                    )
+                                }
+                            }
                         }
-                    )
+                    }
                     
                     convFrame.pointee.pts = frame!.pointee.pts
                     frameToEncode = convFrame
