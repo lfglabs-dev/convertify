@@ -48,7 +48,8 @@ Convertify includes several specialized tools:
 ## Requirements
 
 - macOS 14.0+
-- FFmpeg installed (`brew install ffmpeg`)
+
+> **Note:** FFmpeg is now bundled with the app via FFmpegKit. No external installation needed!
 
 ## Building
 
@@ -113,6 +114,7 @@ Then launch from Spotlight or the Applications folder.
 ```
 convertify/
 ├── Convertify/
+│   ├── FFmpegKit/        # Bundled FFmpeg transcoding engine
 │   ├── Models/           # Data models (MediaFile, OutputFormat, etc.)
 │   ├── Views/            # SwiftUI views
 │   ├── Services/         # FFmpeg integration, media probing

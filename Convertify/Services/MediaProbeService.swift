@@ -2,28 +2,29 @@
 //  MediaProbeService.swift
 //  Convertify
 //
-//  Analyzes media files using ffprobe
+//  Analyzes media files using FFmpegKit's libavformat
 //
 
 import Foundation
+import Libavformat
+import Libavcodec
+import Libavutil
 
 final class MediaProbeService: Sendable {
     
-    private var ffprobeExecutableURL: URL? {
-        ExecutableLocator.resolveExecutableURL(
-            named: "ffprobe",
-            preferredAbsolutePaths: [
-                "/opt/homebrew/bin/ffprobe",
-                "/usr/local/bin/ffprobe",
-                "/usr/bin/ffprobe"
-            ]
-        )
-    }
-    
     /// Probe a media file and return its metadata
     func probe(url: URL) async throws -> MediaFile {
-        let json = try await runFFprobe(url: url)
-        return try parseProbeResult(json: json, url: url)
+        try await withCheckedThrowingContinuation { continuation in
+            // Run on background thread since libav operations can be slow
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.probeSync(url: url)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
     
     /// Check if a file is a valid media file
@@ -38,80 +39,59 @@ final class MediaProbeService: Sendable {
     
     // MARK: - Private Methods
     
-    private func runFFprobe(url: URL) async throws -> [String: Any] {
-        guard let ffprobeExecutableURL else {
-            throw ProbeError.ffprobeNotFound
+    private func probeSync(url: URL) throws -> MediaFile {
+        var formatContext: UnsafeMutablePointer<AVFormatContext>? = nil
+        let path = url.path
+        
+        // Open input file
+        var ret = avformat_open_input(&formatContext, path, nil, nil)
+        guard ret >= 0, let ctx = formatContext else {
+            throw FFmpegKitError.openInputFailed(path, ret)
         }
-
-        let process = Process()
-        process.executableURL = ffprobeExecutableURL
-        process.arguments = [
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            url.path
-        ]
         
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+        // Ensure cleanup
+        defer {
+            avformat_close_input(&formatContext)
+        }
         
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { _ in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                
-                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    continuation.resume(returning: [:])
-                    return
-                }
-                
-                continuation.resume(returning: json)
+        // Find stream info
+        ret = avformat_find_stream_info(ctx, nil)
+        guard ret >= 0 else {
+            throw FFmpegKitError.streamInfoNotFound(path)
+        }
+        
+        // Extract format-level info
+        let duration: TimeInterval = {
+            if ctx.pointee.duration != AV_NOPTS_VALUE_SWIFT {
+                // Duration is in AV_TIME_BASE units (microseconds)
+                return Double(ctx.pointee.duration) / Double(AV_TIME_BASE)
             }
-            
-            do {
-                try process.run()
-            } catch {
-                // Clear the termination handler before resuming to prevent potential double-resume
-                process.terminationHandler = nil
-                continuation.resume(throwing: error)
-            }
-        }
-    }
-    
-    private func parseProbeResult(json: [String: Any], url: URL) throws -> MediaFile {
-        guard !json.isEmpty else {
-            throw ProbeError.invalidFile
-        }
+            return 0
+        }()
         
-        let format = json["format"] as? [String: Any] ?? [:]
-        let streams = json["streams"] as? [[String: Any]] ?? []
+        let bitrate: Int64? = ctx.pointee.bit_rate > 0 ? ctx.pointee.bit_rate : nil
+        
+        // Get file size
+        let fileSize: Int64 = {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
+                return (attrs[.size] as? Int64) ?? 0
+            }
+            return 0
+        }()
         
         // Find video and audio streams
-        let videoStream = streams.first { ($0["codec_type"] as? String) == "video" }
-        let audioStream = streams.first { ($0["codec_type"] as? String) == "audio" }
+        var videoStream: UnsafeMutablePointer<AVStream>? = nil
+        var audioStream: UnsafeMutablePointer<AVStream>? = nil
         
-        // Extract duration
-        var duration: TimeInterval = 0
-        if let durationStr = format["duration"] as? String {
-            duration = Double(durationStr) ?? 0
-        } else if let durationStr = videoStream?["duration"] as? String {
-            duration = Double(durationStr) ?? 0
-        }
-        
-        // Extract file size
-        var fileSize: Int64 = 0
-        if let sizeStr = format["size"] as? String {
-            fileSize = Int64(sizeStr) ?? 0
-        } else {
-            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-            fileSize = (attributes?[.size] as? Int64) ?? 0
-        }
-        
-        // Extract bitrate
-        var bitrate: Int64? = nil
-        if let bitrateStr = format["bit_rate"] as? String {
-            bitrate = Int64(bitrateStr)
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            let stream = ctx.pointee.streams[i]!
+            let codecType = stream.pointee.codecpar.pointee.codec_type
+            
+            if codecType == AVMEDIA_TYPE_VIDEO && videoStream == nil {
+                videoStream = stream
+            } else if codecType == AVMEDIA_TYPE_AUDIO && audioStream == nil {
+                audioStream = stream
+            }
         }
         
         // Video properties
@@ -120,18 +100,27 @@ final class MediaProbeService: Sendable {
         var frameRate: Double? = nil
         
         if let video = videoStream {
-            videoCodec = video["codec_name"] as? String
+            let codecpar = video.pointee.codecpar.pointee
             
-            if let width = video["width"] as? Int,
-               let height = video["height"] as? Int {
-                resolution = Resolution(width: width, height: height)
+            // Get codec name
+            if let codecDesc = avcodec_descriptor_get(codecpar.codec_id) {
+                videoCodec = String(cString: codecDesc.pointee.name)
             }
             
-            // Parse frame rate (can be "30/1" or "29.97")
-            if let fpsStr = video["r_frame_rate"] as? String {
-                frameRate = parseFrameRate(fpsStr)
-            } else if let fpsStr = video["avg_frame_rate"] as? String {
-                frameRate = parseFrameRate(fpsStr)
+            // Resolution
+            if codecpar.width > 0 && codecpar.height > 0 {
+                resolution = Resolution(width: Int(codecpar.width), height: Int(codecpar.height))
+            }
+            
+            // Frame rate
+            let avgFps = video.pointee.avg_frame_rate
+            if avgFps.den > 0 && avgFps.num > 0 {
+                frameRate = Double(avgFps.num) / Double(avgFps.den)
+            } else {
+                let rFps = video.pointee.r_frame_rate
+                if rFps.den > 0 && rFps.num > 0 {
+                    frameRate = Double(rFps.num) / Double(rFps.den)
+                }
             }
         }
         
@@ -141,13 +130,23 @@ final class MediaProbeService: Sendable {
         var audioChannels: Int? = nil
         
         if let audio = audioStream {
-            audioCodec = audio["codec_name"] as? String
+            let codecpar = audio.pointee.codecpar.pointee
             
-            if let sampleRateStr = audio["sample_rate"] as? String {
-                audioSampleRate = Int(sampleRateStr)
+            // Get codec name
+            if let codecDesc = avcodec_descriptor_get(codecpar.codec_id) {
+                audioCodec = String(cString: codecDesc.pointee.name)
             }
             
-            audioChannels = audio["channels"] as? Int
+            // Sample rate
+            if codecpar.sample_rate > 0 {
+                audioSampleRate = Int(codecpar.sample_rate)
+            }
+            
+            // Channels
+            let channels = codecpar.ch_layout.nb_channels
+            if channels > 0 {
+                audioChannels = Int(channels)
+            }
         }
         
         return MediaFile(
@@ -166,35 +165,20 @@ final class MediaProbeService: Sendable {
             audioChannels: audioChannels
         )
     }
-    
-    private func parseFrameRate(_ str: String) -> Double? {
-        if str.contains("/") {
-            let parts = str.split(separator: "/")
-            guard parts.count == 2,
-                  let num = Double(parts[0]),
-                  let den = Double(parts[1]),
-                  den != 0 else {
-                return nil
-            }
-            return num / den
-        }
-        return Double(str)
-    }
 }
 
 // MARK: - Errors
 
 enum ProbeError: LocalizedError {
     case invalidFile
-    case ffprobeNotFound
+    case ffprobeNotFound  // Kept for API compatibility, but no longer used
     
     var errorDescription: String? {
         switch self {
         case .invalidFile:
             return "Not a valid media file"
         case .ffprobeNotFound:
-            return "ffprobe not found. Please install FFmpeg via Homebrew."
+            return "Media probing failed"
         }
     }
 }
-

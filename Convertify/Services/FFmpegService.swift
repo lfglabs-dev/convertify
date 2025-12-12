@@ -2,7 +2,7 @@
 //  FFmpegService.swift
 //  Convertify
 //
-//  Handles FFmpeg process execution and progress monitoring
+//  FFmpegKit-based transcoding service for App Store distribution
 //
 
 import Foundation
@@ -13,16 +13,116 @@ import Combine
 struct FFmpegCommand {
     let inputPath: String
     let outputPath: String
-    let preInputArguments: [String] // Arguments that must appear before -i (e.g., -hwaccel)
+    let preInputArguments: [String] // Kept for API compatibility
     let arguments: [String]
     
+    // New: Convert to TranscodingConfig
+    func toTranscodingConfig(format: String) -> TranscodingConfig {
+        var config = TranscodingConfig(
+            inputPath: inputPath,
+            outputPath: outputPath,
+            outputFormat: format
+        )
+        
+        // Parse arguments to extract settings
+        var i = 0
+        while i < arguments.count {
+            let arg = arguments[i]
+            
+            switch arg {
+            case "-c:v":
+                if i + 1 < arguments.count {
+                    config.videoCodec = arguments[i + 1]
+                    i += 1
+                }
+            case "-c:a":
+                if i + 1 < arguments.count {
+                    let codec = arguments[i + 1]
+                    if codec == "copy" {
+                        config.copyAudio = true
+                    } else {
+                        config.audioCodec = codec
+                    }
+                    i += 1
+                }
+            case "-b:v":
+                if i + 1 < arguments.count {
+                    let bitrateStr = arguments[i + 1].replacingOccurrences(of: "k", with: "000")
+                    config.videoBitrate = Int64(bitrateStr)
+                    i += 1
+                }
+            case "-b:a":
+                if i + 1 < arguments.count {
+                    let bitrateStr = arguments[i + 1].replacingOccurrences(of: "k", with: "000")
+                    config.audioBitrate = Int64(bitrateStr)
+                    i += 1
+                }
+            case "-crf":
+                if i + 1 < arguments.count {
+                    config.videoCRF = Int(arguments[i + 1])
+                    i += 1
+                }
+            case "-vn":
+                config.stripVideo = true
+            case "-an":
+                config.stripAudio = true
+            case "-t":
+                if i + 1 < arguments.count {
+                    config.endTime = parseTimeString(arguments[i + 1])
+                    i += 1
+                }
+            case "-vf":
+                if i + 1 < arguments.count {
+                    config.videoFilters = [arguments[i + 1]]
+                    i += 1
+                }
+            case "-ar":
+                if i + 1 < arguments.count {
+                    config.sampleRate = Int32(arguments[i + 1])
+                    i += 1
+                }
+            case "-ac":
+                if i + 1 < arguments.count {
+                    config.audioChannels = Int32(arguments[i + 1])
+                    i += 1
+                }
+            default:
+                break
+            }
+            i += 1
+        }
+        
+        // Parse pre-input arguments for start time
+        for j in 0..<preInputArguments.count {
+            if preInputArguments[j] == "-ss" && j + 1 < preInputArguments.count {
+                config.startTime = parseTimeString(preInputArguments[j + 1])
+            }
+        }
+        
+        return config
+    }
+    
+    private func parseTimeString(_ str: String) -> Double {
+        // Format: HH:MM:SS.mmm or just seconds
+        if str.contains(":") {
+            let parts = str.split(separator: ":")
+            if parts.count == 3 {
+                let hours = Double(parts[0]) ?? 0
+                let minutes = Double(parts[1]) ?? 0
+                let seconds = Double(parts[2]) ?? 0
+                return hours * 3600 + minutes * 60 + seconds
+            }
+        }
+        return Double(str) ?? 0
+    }
+    
     var fullArguments: [String] {
-        var args = ["-y"] // Overwrite output
-        args += preInputArguments // Hardware acceleration must come before -i
+        var args = ["-y"]
+        args += preInputArguments
         args += ["-i", inputPath]
         args += arguments
-        args += ["-progress", "pipe:1"] // Progress to stdout
-        args += ["-stats_period", "0.5"] // Update every 0.5s
+        args += ["-progress", "pipe:1"]
+        args += ["-stats_period", "0.5"]
         args += [outputPath]
         return args
     }
@@ -31,162 +131,22 @@ struct FFmpegCommand {
 // MARK: - Progress Info
 
 struct ConversionProgress {
-    var currentTime: TimeInterval
-    var percentage: Double
-    var speed: Double
-    var frame: Int
-    var fps: Double
-    var bitrate: String
-    var size: Int64
-}
-
-// MARK: - Thread-safe helpers (Swift 6 SendableClosureCaptures)
-
-private final class LockedString: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: String = ""
-
-    func append(_ chunk: String) {
-        lock.lock()
-        value += chunk
-        lock.unlock()
-    }
-
-    func snapshot() -> String {
-        lock.lock()
-        let out = value
-        lock.unlock()
-        return out
-    }
-}
-
-private final class ReadGate: @unchecked Sendable {
-    private let lock = NSLock()
-
-    func withLock<T>(_ body: () -> T) -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return body()
-    }
-}
-
-private final class FFmpegProgressParser: @unchecked Sendable {
-    private let lock = NSLock()
-    private let duration: TimeInterval
-    private let onProgress: @Sendable (ConversionProgress) -> Void
-
-    private var buffer: String = ""
-    private var currentProgress = ConversionProgress(
-        currentTime: 0,
-        percentage: 0,
-        speed: 0,
-        frame: 0,
-        fps: 0,
-        bitrate: "N/A",
-        size: 0
-    )
-
-    init(duration: TimeInterval, onProgress: @Sendable @escaping (ConversionProgress) -> Void) {
-        self.duration = duration
-        self.onProgress = onProgress
-    }
-
-    func consume(_ chunk: String) {
-        // Collect snapshots to emit outside the lock
-        var snapshots: [ConversionProgress] = []
-
-        lock.lock()
-        buffer += chunk
-
-        // Split into lines while preserving a possible partial last line.
-        let endsWithNewline = buffer.hasSuffix("\n")
-        let parts = buffer.split(separator: "\n", omittingEmptySubsequences: false)
-
-        let linesToProcess: ArraySlice<Substring>
-        if endsWithNewline {
-            linesToProcess = parts[...]
-            buffer = ""
-        } else {
-            linesToProcess = parts.dropLast()
-            buffer = String(parts.last ?? "")
-        }
-
-        for rawLine in linesToProcess {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty else { continue }
-
-            let kv = line.split(separator: "=", maxSplits: 1)
-            guard kv.count == 2 else { continue }
-
-            let key = kv[0].trimmingCharacters(in: .whitespaces)
-            let value = kv[1].trimmingCharacters(in: .whitespaces)
-
-            switch key {
-            case "frame":
-                currentProgress.frame = Int(value) ?? 0
-            case "fps":
-                currentProgress.fps = Double(value) ?? 0
-            case "bitrate":
-                currentProgress.bitrate = value
-            case "total_size":
-                currentProgress.size = Int64(value) ?? 0
-            case "out_time_us":
-                if let microseconds = Double(value) {
-                    currentProgress.currentTime = microseconds / 1_000_000
-                    if duration > 0 {
-                        currentProgress.percentage = min(currentProgress.currentTime / duration, 1.0)
-                    }
-                }
-            case "speed":
-                // Speed is like "1.5x" or "N/A"
-                let speedStr = value.replacingOccurrences(of: "x", with: "")
-                currentProgress.speed = Double(speedStr) ?? 0
-            case "progress":
-                if value == "continue" || value == "end" {
-                    snapshots.append(currentProgress)
-                }
-            default:
-                break
-            }
-        }
-
-        lock.unlock()
-
-        // Emit outside the lock to avoid blocking the pipe thread.
-        for snapshot in snapshots {
-            onProgress(snapshot)
-        }
-    }
-
-    func flushRemainder() {
-        lock.lock()
-        let remainder = buffer
-        buffer = ""
-        lock.unlock()
-
-        guard !remainder.isEmpty else { return }
-        // Treat the remainder as a complete line.
-        consume(remainder + "\n")
-    }
+    var currentTime: TimeInterval = 0
+    var percentage: Double = 0
+    var speed: Double = 0
+    var frame: Int = 0
+    var fps: Double = 0
+    var bitrate: String = "N/A"
+    var size: Int64 = 0
 }
 
 // MARK: - FFmpeg Service
 
 @MainActor
 class FFmpegService: ObservableObject {
-    private var currentProcess: Process?
+    private var currentPipeline: TranscodingPipeline?
+    private var currentGifTranscoder: GifTranscoder?
     private var isCancelled = false
-    
-    private var ffmpegExecutableURL: URL? {
-        ExecutableLocator.resolveExecutableURL(
-            named: "ffmpeg",
-            preferredAbsolutePaths: [
-                "/opt/homebrew/bin/ffmpeg",   // Apple Silicon Homebrew
-                "/usr/local/bin/ffmpeg",      // Intel Homebrew
-                "/usr/bin/ffmpeg"             // System (rarely present)
-            ]
-        )
-    }
     
     /// Execute FFmpeg command and yield progress updates
     func execute(command: FFmpegCommand, duration: TimeInterval) -> AsyncThrowingStream<ConversionProgress, Error> {
@@ -195,7 +155,7 @@ class FFmpegService: ObservableObject {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await self.runProcess(command: command, duration: duration) { progress in
+                    try await self.runTranscoding(command: command, duration: duration) { progress in
                         continuation.yield(progress)
                     }
                     continuation.finish()
@@ -209,139 +169,256 @@ class FFmpegService: ObservableObject {
     /// Cancel the current conversion
     func cancel() {
         isCancelled = true
-        currentProcess?.terminate()
-        currentProcess = nil
+        currentPipeline?.cancel()
+        currentGifTranscoder?.cancel()
+        currentPipeline = nil
+        currentGifTranscoder = nil
     }
     
-    /// Check if FFmpeg is available
+    /// Check if FFmpeg is available (always true with bundled FFmpegKit)
     func isAvailable() -> Bool {
-        ffmpegExecutableURL != nil
+        return true
     }
     
     /// Get FFmpeg version
     func getVersion() -> String? {
-        guard let ffmpegExecutableURL else { return nil }
-
-        let process = Process()
-        process.executableURL = ffmpegExecutableURL
-        process.arguments = ["-version"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return nil }
-            
-            // Extract version from first line
-            if let firstLine = output.components(separatedBy: "\n").first {
-                return firstLine
-            }
-            return nil
-        } catch {
-            return nil
-        }
+        // Return version from bundled FFmpegKit
+        return "FFmpegKit 6.1 (bundled)"
     }
     
     // MARK: - Private Methods
     
-    private func runProcess(
+    private func runTranscoding(
         command: FFmpegCommand,
         duration: TimeInterval,
-        onProgress: @Sendable @escaping (ConversionProgress) -> Void
+        onProgress: @escaping (ConversionProgress) -> Void
     ) async throws {
-        guard let ffmpegExecutableURL else {
-            throw FFmpegError.notFound
+        let outputExt = (command.outputPath as NSString).pathExtension.lowercased()
+        
+        // Determine the type of transcoding
+        if outputExt == "gif" {
+            try await runGifTranscoding(command: command, duration: duration, onProgress: onProgress)
+        } else if isImageFormat(outputExt) && isImageInput(command.inputPath) {
+            try await runImageTranscoding(command: command, onProgress: onProgress)
+        } else {
+            try await runVideoAudioTranscoding(command: command, duration: duration, onProgress: onProgress)
         }
-
-        let process = Process()
-        process.executableURL = ffmpegExecutableURL
-        process.arguments = command.fullArguments
+    }
+    
+    private func runVideoAudioTranscoding(
+        command: FFmpegCommand,
+        duration: TimeInterval,
+        onProgress: @escaping (ConversionProgress) -> Void
+    ) async throws {
+        let outputExt = (command.outputPath as NSString).pathExtension.lowercased()
+        var config = command.toTranscodingConfig(format: outputExt)
         
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        
-        currentProcess = process
-        
-        let progressParser = FFmpegProgressParser(duration: duration, onProgress: onProgress)
-        let stderrCollector = LockedString()
-        let stdoutReadGate = ReadGate()
-        let stderrReadGate = ReadGate()
-        
-        // Handle stdout (progress output)
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            stdoutReadGate.withLock {
-                let data = handle.availableData
-                guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
-                progressParser.consume(output)
+        // Select hardware encoder if available
+        if config.videoCodec == nil || config.videoCodec == "libx264" {
+            let (encoder, isHardware) = EncoderSelector.selectEncoder(for: outputExt, preferHardware: true)
+            if isHardware {
+                config.videoCodec = encoder
             }
         }
         
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            stderrReadGate.withLock {
-                let data = handle.availableData
-                guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
-                stderrCollector.append(output)
+        let pipeline = TranscodingPipeline(config: config)
+        currentPipeline = pipeline
+        
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try pipeline.transcode { transcodingProgress in
+                        let progress = ConversionProgress(
+                            currentTime: transcodingProgress.currentTime,
+                            percentage: transcodingProgress.percentage,
+                            speed: transcodingProgress.speed,
+                            frame: transcodingProgress.frame,
+                            fps: transcodingProgress.fps,
+                            bitrate: "\(transcodingProgress.bitrate / 1000)k",
+                            size: transcodingProgress.size
+                        )
+                        DispatchQueue.main.async {
+                            onProgress(progress)
+                        }
+                    }
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
         
-        // Wait for completion - set terminationHandler before run() to avoid race condition
-        try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { _ in
-                continuation.resume()
+        currentPipeline = nil
+    }
+    
+    private func runGifTranscoding(
+        command: FFmpegCommand,
+        duration: TimeInterval,
+        onProgress: @escaping (ConversionProgress) -> Void
+    ) async throws {
+        // Parse GIF settings from arguments
+        var fps = 15
+        var width = 480
+        var startTime: Double? = nil
+        var endTime: Double? = nil
+        
+        // Parse from video filters
+        for arg in command.arguments {
+            if arg.contains("fps=") {
+                if let match = arg.range(of: "fps=(\\d+)", options: .regularExpression) {
+                    let fpsStr = String(arg[match]).replacingOccurrences(of: "fps=", with: "")
+                    fps = Int(fpsStr) ?? 15
+                }
             }
-            
-            do {
-                try process.run()
+            if arg.contains("scale=") {
+                if let match = arg.range(of: "scale=(\\d+)", options: .regularExpression) {
+                    let widthStr = String(arg[match]).replacingOccurrences(of: "scale=", with: "")
+                    width = Int(widthStr) ?? 480
+                }
+            }
+        }
+        
+        // Parse start/end time from pre-input args
+        for i in 0..<command.preInputArguments.count {
+            if command.preInputArguments[i] == "-ss" && i + 1 < command.preInputArguments.count {
+                startTime = parseTimeString(command.preInputArguments[i + 1])
+            }
+        }
+        
+        for i in 0..<command.arguments.count {
+            if command.arguments[i] == "-t" && i + 1 < command.arguments.count {
+                let durationVal = parseTimeString(command.arguments[i + 1])
+                if let start = startTime {
+                    endTime = start + durationVal
+                } else {
+                    endTime = durationVal
+                }
+            }
+        }
+        
+        let transcoder = GifTranscoder(
+            inputPath: command.inputPath,
+            outputPath: command.outputPath,
+            fps: fps,
+            width: width,
+            startTime: startTime,
+            endTime: endTime
+        )
+        currentGifTranscoder = transcoder
+        
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try transcoder.transcode { transcodingProgress in
+                        let progress = ConversionProgress(
+                            currentTime: transcodingProgress.currentTime,
+                            percentage: transcodingProgress.percentage,
+                            speed: transcodingProgress.speed,
+                            frame: transcodingProgress.frame,
+                            fps: transcodingProgress.fps,
+                            bitrate: "N/A",
+                            size: 0
+                        )
+                        DispatchQueue.main.async {
+                            onProgress(progress)
+                        }
+                    }
+                    continuation.resume()
             } catch {
-                // Clear the termination handler before resuming to prevent potential double-resume
-                process.terminationHandler = nil
                 continuation.resume(throwing: error)
+                }
             }
         }
         
-        // Clean up handlers
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-
-        // Flush any remaining buffered output after handlers are removed.
-        let remainingStdout = stdoutReadGate.withLock {
-            stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        }
-        if let remainingOutStr = String(data: remainingStdout, encoding: .utf8), !remainingOutStr.isEmpty {
-            progressParser.consume(remainingOutStr)
-        }
-        progressParser.flushRemainder()
-
-        let remainingStderr = stderrReadGate.withLock {
-            stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        }
-        if let remainingErrStr = String(data: remainingStderr, encoding: .utf8), !remainingErrStr.isEmpty {
-            stderrCollector.append(remainingErrStr)
-        }
-
-        let finalStderrOutput = stderrCollector.snapshot()
-
-        stdoutPipe.fileHandleForReading.closeFile()
-        stderrPipe.fileHandleForReading.closeFile()
+        currentGifTranscoder = nil
+    }
+    
+    private func runImageTranscoding(
+        command: FFmpegCommand,
+        onProgress: @escaping (ConversionProgress) -> Void
+    ) async throws {
+        // Parse quality from arguments
+        var quality = 90
+        var width: Int? = nil
+        var height: Int? = nil
         
-        currentProcess = nil
-        
-        // Check exit status
-        if isCancelled {
-            throw FFmpegError.cancelled
+        for i in 0..<command.arguments.count {
+            let arg = command.arguments[i]
+            if arg == "-q:v" && i + 1 < command.arguments.count {
+                // JPEG quality is inverse (2-31, lower is better)
+                let q = Int(command.arguments[i + 1]) ?? 5
+                quality = 100 - (q * 100 / 31)
+            }
+            if arg == "-quality" && i + 1 < command.arguments.count {
+                // WebP quality (0-100)
+                quality = Int(command.arguments[i + 1]) ?? 90
+            }
         }
         
-        if process.terminationStatus != 0 {
-            throw FFmpegError.conversionFailed(finalStderrOutput)
+        // Parse scale filter for dimensions
+        for arg in command.arguments {
+            if arg.contains("scale=") {
+                let parts = arg.replacingOccurrences(of: "scale=", with: "").split(separator: ":")
+                if parts.count >= 2 {
+                    width = Int(parts[0])
+                    height = Int(parts[1])
+                }
+            }
         }
+        
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try ImageTranscoder.convert(
+                        inputPath: command.inputPath,
+                        outputPath: command.outputPath,
+                        width: width,
+                        height: height,
+                        quality: quality
+                    )
+                    
+                    // Report completion
+                    let progress = ConversionProgress(
+                        currentTime: 1,
+                        percentage: 1.0,
+                        speed: 1,
+                        frame: 1,
+                        fps: 1,
+                        bitrate: "N/A",
+                        size: 0
+                    )
+                    DispatchQueue.main.async {
+                        onProgress(progress)
+                    }
+                    
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    private func parseTimeString(_ str: String) -> Double {
+        if str.contains(":") {
+            let parts = str.split(separator: ":")
+            if parts.count == 3 {
+                let hours = Double(parts[0]) ?? 0
+                let minutes = Double(parts[1]) ?? 0
+                let seconds = Double(parts[2]) ?? 0
+                return hours * 3600 + minutes * 60 + seconds
+            }
+        }
+        return Double(str) ?? 0
+    }
+    
+    private func isImageFormat(_ ext: String) -> Bool {
+        return ["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "heic", "ico"].contains(ext)
+    }
+    
+    private func isImageInput(_ path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return isImageFormat(ext)
     }
 }
 
@@ -356,14 +433,9 @@ enum FFmpegError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notFound:
-            return "FFmpeg not found. Please install it via Homebrew: brew install ffmpeg"
+            return "FFmpeg is not available"
         case .conversionFailed(let message):
-            // Extract the most relevant error message
-            let lines = message.components(separatedBy: "\n")
-            if let errorLine = lines.last(where: { $0.contains("Error") || $0.contains("error") }) {
-                return errorLine.trimmingCharacters(in: .whitespaces)
-            }
-            return "Conversion failed"
+            return message
         case .cancelled:
             return "Conversion was cancelled"
         case .invalidInput:
@@ -371,4 +443,3 @@ enum FFmpegError: LocalizedError {
         }
     }
 }
-
