@@ -22,6 +22,11 @@
 		APP013 /* ConversionPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013 /* ConversionPanelView.swift */; };
 		APP014 /* AdvancedOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC014 /* AdvancedOptionsView.swift */; };
 		APP015 /* ProgressOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC015 /* ProgressOverlayView.swift */; };
+		APP016 /* FFmpegTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC016 /* FFmpegTypes.swift */; };
+		APP017 /* FilterGraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC017 /* FilterGraph.swift */; };
+		APP018 /* HardwareAcceleration.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC018 /* HardwareAcceleration.swift */; };
+		APP019 /* TranscodingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC019 /* TranscodingPipeline.swift */; };
+		FWK002 /* FFmpegKit in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001 /* FFmpegKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +48,10 @@
 		SRC013 /* ConversionPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversionPanelView.swift; sourceTree = "<group>"; };
 		SRC014 /* AdvancedOptionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedOptionsView.swift; sourceTree = "<group>"; };
 		SRC015 /* ProgressOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressOverlayView.swift; sourceTree = "<group>"; };
+		SRC016 /* FFmpegTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFmpegTypes.swift; sourceTree = "<group>"; };
+		SRC017 /* FilterGraph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterGraph.swift; sourceTree = "<group>"; };
+		SRC018 /* HardwareAcceleration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareAcceleration.swift; sourceTree = "<group>"; };
+		SRC019 /* TranscodingPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscodingPipeline.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -50,6 +59,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FWK002 /* FFmpegKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -72,6 +82,7 @@
 				GRP004 /* Services */,
 				GRP005 /* Views */,
 				GRP006 /* Utilities */,
+				GRP007 /* FFmpegKit */,
 				RES001 /* Assets.xcassets */,
 				CFG001 /* Info.plist */,
 				CFG002 /* Convertify.entitlements */,
@@ -128,6 +139,17 @@
 			path = Utilities;
 			sourceTree = "<group>";
 		};
+		GRP007 /* FFmpegKit */ = {
+			isa = PBXGroup;
+			children = (
+				SRC016 /* FFmpegTypes.swift */,
+				SRC017 /* FilterGraph.swift */,
+				SRC018 /* HardwareAcceleration.swift */,
+				SRC019 /* TranscodingPipeline.swift */,
+			);
+			path = FFmpegKit;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -144,6 +166,9 @@
 			dependencies = (
 			);
 			name = Convertify;
+			packageProductDependencies = (
+				PKG001 /* FFmpegKit */,
+			);
 			productName = Convertify;
 			productReference = PRD001 /* Convertify.app */;
 			productType = "com.apple.product-type.application";
@@ -172,6 +197,9 @@
 				Base,
 			);
 			mainGroup = GRP000;
+			packageReferences = (
+				PKG000 /* XCRemoteSwiftPackageReference "FFmpegKit" */,
+			);
 			productRefGroup = GRP002 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -211,6 +239,10 @@
 				APP013 /* ConversionPanelView.swift in Sources */,
 				APP014 /* AdvancedOptionsView.swift in Sources */,
 				APP015 /* ProgressOverlayView.swift in Sources */,
+				APP016 /* FFmpegTypes.swift in Sources */,
+				APP017 /* FilterGraph.swift in Sources */,
+				APP018 /* HardwareAcceleration.swift in Sources */,
+				APP019 /* TranscodingPipeline.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -367,6 +399,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+				VALIDATE_EMBEDDED_BUNDLES = NO;
 			};
 			name = Debug;
 		};
@@ -398,6 +431,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+				VALIDATE_EMBEDDED_BUNDLES = NO;
 			};
 			name = Release;
 		};
@@ -423,6 +457,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		PKG000 /* XCRemoteSwiftPackageReference "FFmpegKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kingslay/FFmpegKit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		PKG001 /* FFmpegKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PKG000 /* XCRemoteSwiftPackageReference "FFmpegKit" */;
+			productName = FFmpegKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = PRJ001 /* Project object */;
 }

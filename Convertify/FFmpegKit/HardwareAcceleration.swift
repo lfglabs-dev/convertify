@@ -85,11 +85,12 @@ final class HardwareAccelerationManager {
         }
         
         // Allocate hardware frames context
-        guard let framesRef = av_hwframe_ctx_alloc(deviceCtx) else {
+        var framesRef: UnsafeMutablePointer<AVBufferRef>? = av_hwframe_ctx_alloc(deviceCtx)
+        guard framesRef != nil else {
             throw FFmpegKitError.allocationFailed("hardware frames context")
         }
         
-        let framesCtx = UnsafeMutableRawPointer(framesRef.pointee.data)
+        let framesCtx = UnsafeMutableRawPointer(framesRef!.pointee.data)
             .bindMemory(to: AVHWFramesContext.self, capacity: 1)
         
         framesCtx.pointee.format = AV_PIX_FMT_VIDEOTOOLBOX

@@ -94,14 +94,22 @@ func ffmpegCheck(_ ret: Int32, or error: @autoclosure () -> FFmpegKitError) thro
 
 /// Common FFmpeg error codes
 let AVERROR_EOF_VALUE: Int32 = -541478725  // AVERROR_EOF
-let AVERROR_EAGAIN_VALUE: Int32 = -11      // EAGAIN
+
+/// Platform-specific EAGAIN value
+/// macOS uses EAGAIN = 35, Linux uses EAGAIN = 11
+/// FFmpeg's AVERROR macro negates POSIX error codes
+#if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+let AVERROR_EAGAIN_VALUE: Int32 = -35      // macOS/Darwin EAGAIN
+#else
+let AVERROR_EAGAIN_VALUE: Int32 = -11      // Linux EAGAIN
+#endif
 
 func isAVErrorEOF(_ code: Int32) -> Bool {
     return code == AVERROR_EOF_VALUE || code == -Int32(MKTAG("E", "O", "F", " "))
 }
 
 func isAVErrorEAGAIN(_ code: Int32) -> Bool {
-    return code == -11 || code == AVERROR_EAGAIN_VALUE
+    return code == AVERROR_EAGAIN_VALUE
 }
 
 /// Create AVERROR from POSIX error
