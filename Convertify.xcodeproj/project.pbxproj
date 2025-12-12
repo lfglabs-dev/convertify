@@ -160,6 +160,7 @@
 				SRC003 /* Sources */,
 				FWK001 /* Frameworks */,
 				RES002 /* Resources */,
+				SCR001 /* Fix Framework Bundles */,
 			);
 			buildRules = (
 			);
@@ -248,6 +249,27 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		SCR001 /* Fix Framework Bundles */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Fix Framework Bundles";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "# Convert shallow framework bundles to versioned bundles for macOS\nset -e\n\nFRAMEWORKS_PATH=\"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\n\nif [ ! -d \"$FRAMEWORKS_PATH\" ]; then\n    echo \"Frameworks directory not found, skipping\"\n    exit 0\nfi\n\necho \"Converting shallow framework bundles in: $FRAMEWORKS_PATH\"\n\nconvert_to_versioned_bundle() {\n    local framework_path=\"$1\"\n    local framework_name=$(basename \"$framework_path\" .framework)\n    \n    # Check if already a versioned bundle\n    if [ -d \"$framework_path/Versions\" ]; then\n        return 0\n    fi\n    \n    # Check if Info.plist exists at root (shallow bundle indicator)\n    if [ ! -f \"$framework_path/Info.plist\" ]; then\n        return 0\n    fi\n    \n    echo \"Converting: $framework_name.framework\"\n    \n    # Create temporary directory for new structure\n    local temp_dir=$(mktemp -d)\n    local version_path=\"$temp_dir/Versions/A\"\n    mkdir -p \"$version_path/Resources\"\n    \n    # Copy binary\n    if [ -f \"$framework_path/$framework_name\" ]; then\n        cp -p \"$framework_path/$framework_name\" \"$version_path/$framework_name\"\n    fi\n    \n    # Copy Info.plist to Resources\n    cp -p \"$framework_path/Info.plist\" \"$version_path/Resources/Info.plist\"\n    \n    # Copy Headers if exists\n    if [ -d \"$framework_path/Headers\" ]; then\n        cp -Rp \"$framework_path/Headers\" \"$version_path/Headers\"\n    fi\n    \n    # Copy Modules if exists  \n    if [ -d \"$framework_path/Modules\" ]; then\n        cp -Rp \"$framework_path/Modules\" \"$version_path/Modules\"\n    fi\n    \n    # Create Current symlink\n    (cd \"$temp_dir/Versions\" && ln -sf \"A\" \"Current\")\n    \n    # Create top-level symlinks\n    if [ -f \"$version_path/$framework_name\" ]; then\n        (cd \"$temp_dir\" && ln -sf \"Versions/Current/$framework_name\" \"$framework_name\")\n    fi\n    (cd \"$temp_dir\" && ln -sf \"Versions/Current/Resources\" \"Resources\")\n    if [ -d \"$version_path/Headers\" ]; then\n        (cd \"$temp_dir\" && ln -sf \"Versions/Current/Headers\" \"Headers\")\n    fi\n    if [ -d \"$version_path/Modules\" ]; then\n        (cd \"$temp_dir\" && ln -sf \"Versions/Current/Modules\" \"Modules\")\n    fi\n    \n    # Replace the original framework\n    rm -rf \"$framework_path\"\n    mv \"$temp_dir\" \"$framework_path\"\n}\n\n# Process all frameworks\nfor framework in \"$FRAMEWORKS_PATH\"/*.framework; do\n    if [ -d \"$framework\" ]; then\n        convert_to_versioned_bundle \"$framework\"\n    fi\ndone\n\necho \"Framework bundle conversion complete\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin XCBuildConfiguration section */
 		BLD001 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -287,7 +309,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -352,7 +374,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
