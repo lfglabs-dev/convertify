@@ -100,7 +100,7 @@ final class HardwareAccelerationManager {
         
         let ret = av_hwframe_ctx_init(framesRef)
         guard ret >= 0 else {
-            av_buffer_unref(&hwFramesContext)
+            av_buffer_unref(&framesRef)
             throw FFmpegKitError.allocationFailed("hardware frames context init")
         }
         

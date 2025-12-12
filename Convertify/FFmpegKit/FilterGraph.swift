@@ -297,7 +297,14 @@ final class GifTranscoder {
         codecpar.pointee.codec_type = AVMEDIA_TYPE_VIDEO
         codecpar.pointee.codec_id = AV_CODEC_ID_GIF
         codecpar.pointee.width = Int32(width)
-        codecpar.pointee.height = Int32(-1)  // Will be calculated from aspect ratio
+        
+        // Calculate height from aspect ratio (scale filter will use width:-1 which means auto-height)
+        // Get the output height from the buffersink after filter graph is configured
+        guard let sinkCtx = bufferSinkContext else {
+            throw FFmpegKitError.filterGraphFailed("buffer sink not initialized")
+        }
+        let outputHeight = av_buffersink_get_h(sinkCtx)
+        codecpar.pointee.height = outputHeight
         
         // Open output file
         if outCtx.pointee.oformat.pointee.flags & AVFMT_NOFILE == 0 {

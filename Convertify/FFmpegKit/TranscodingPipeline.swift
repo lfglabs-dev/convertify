@@ -317,13 +317,8 @@ final class TranscodingPipeline {
         // Bitrate / quality
         if let bitrate = config.videoBitrate {
             encoderCtx.pointee.bit_rate = bitrate
-        } else if let crf = config.videoCRF {
-            // CRF mode - set via options
-            var opts: OpaquePointer? = nil
-            av_dict_set(&opts, "crf", String(crf), 0)
-            // Will be used when opening encoder
-            av_dict_free(&opts)
         }
+        // CRF will be handled when opening encoder below
         
         // Threading
         encoderCtx.pointee.thread_count = 0
@@ -528,7 +523,7 @@ final class TranscodingPipeline {
         // Set output pixel format
         var pixFmts: [AVPixelFormat] = [encoderCtx.pointee.pix_fmt, AVPixelFormat(rawValue: -1)]
         ret = av_opt_set_bin(videoBufferSinkContext, "pix_fmts",
-                            &pixFmts, Int32(MemoryLayout<AVPixelFormat>.size),
+                            &pixFmts, Int32(MemoryLayout<AVPixelFormat>.size * pixFmts.count),
                             AV_OPT_SEARCH_CHILDREN)
         guard ret >= 0 else {
             throw FFmpegKitError.filterGraphFailed("failed to set output pixel format")

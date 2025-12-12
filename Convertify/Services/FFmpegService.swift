@@ -32,7 +32,12 @@ struct FFmpegCommand {
             switch arg {
             case "-c:v":
                 if i + 1 < arguments.count {
-                    config.videoCodec = arguments[i + 1]
+                    let codec = arguments[i + 1]
+                    if codec == "copy" {
+                        config.copyVideo = true
+                    } else {
+                        config.videoCodec = codec
+                    }
                     i += 1
                 }
             case "-c:a":

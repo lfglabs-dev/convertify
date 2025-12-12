@@ -25,6 +25,24 @@ This project is **fully open source**. You can clone it, build it, modify it, an
 - **Sensible defaults** that just work
 - **Hardware acceleration** via Apple VideoToolbox when available
 
+## Screenshots
+
+<p align="center">
+  <img src="branding/screenshots/screenshot-1.webp" alt="Convertify Main Interface" width="720">
+</p>
+
+<p align="center">
+  <img src="branding/screenshots/screenshot-2.webp" alt="Format Selection" width="720">
+</p>
+
+<p align="center">
+  <img src="branding/screenshots/screenshot-3.webp" alt="Advanced Options" width="720">
+</p>
+
+<p align="center">
+  <img src="branding/screenshots/screenshot-4.webp" alt="Conversion Progress" width="720">
+</p>
+
 ## Tools
 
 Convertify includes several specialized tools:
