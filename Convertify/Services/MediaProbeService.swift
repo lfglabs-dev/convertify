@@ -7,23 +7,17 @@
 
 import Foundation
 
-class MediaProbeService {
+final class MediaProbeService: Sendable {
     
-    /// Path to ffprobe binary
-    private var ffprobePath: String {
-        let paths = [
-            "/opt/homebrew/bin/ffprobe",
-            "/usr/local/bin/ffprobe",
-            "/usr/bin/ffprobe"
-        ]
-        
-        for path in paths {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        
-        return "ffprobe"
+    private var ffprobeExecutableURL: URL? {
+        ExecutableLocator.resolveExecutableURL(
+            named: "ffprobe",
+            preferredAbsolutePaths: [
+                "/opt/homebrew/bin/ffprobe",
+                "/usr/local/bin/ffprobe",
+                "/usr/bin/ffprobe"
+            ]
+        )
     }
     
     /// Probe a media file and return its metadata
@@ -45,8 +39,12 @@ class MediaProbeService {
     // MARK: - Private Methods
     
     private func runFFprobe(url: URL) async throws -> [String: Any] {
+        guard let ffprobeExecutableURL else {
+            throw ProbeError.ffprobeNotFound
+        }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffprobePath)
+        process.executableURL = ffprobeExecutableURL
         process.arguments = [
             "-v", "quiet",
             "-print_format", "json",

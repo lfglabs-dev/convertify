@@ -51,20 +51,15 @@ class HardwareDetector {
     
     private var cachedCapabilities: HardwareAcceleration?
     
-    private var ffmpegPath: String {
-        let paths = [
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/usr/bin/ffmpeg"
-        ]
-        
-        for path in paths {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        
-        return "ffmpeg"
+    private var ffmpegExecutableURL: URL? {
+        ExecutableLocator.resolveExecutableURL(
+            named: "ffmpeg",
+            preferredAbsolutePaths: [
+                "/opt/homebrew/bin/ffmpeg",
+                "/usr/local/bin/ffmpeg",
+                "/usr/bin/ffmpeg"
+            ]
+        )
     }
     
     /// Detect hardware acceleration capabilities
@@ -123,8 +118,10 @@ class HardwareDetector {
     // MARK: - Private Methods
     
     private func detectEncoders() -> [String] {
+        guard let ffmpegExecutableURL else { return [] }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.executableURL = ffmpegExecutableURL
         process.arguments = ["-encoders", "-hide_banner"]
         
         let pipe = Pipe()
@@ -145,8 +142,10 @@ class HardwareDetector {
     }
     
     private func detectDecoders() -> [String] {
+        guard let ffmpegExecutableURL else { return [] }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.executableURL = ffmpegExecutableURL
         process.arguments = ["-decoders", "-hide_banner"]
         
         let pipe = Pipe()

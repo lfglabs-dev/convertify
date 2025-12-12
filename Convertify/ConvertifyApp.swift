@@ -27,6 +27,7 @@ struct ConvertifyApp: App {
 
 // MARK: - App Delegate
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Activate the app and bring to front
@@ -132,6 +133,7 @@ class ConversionManager: ObservableObject {
     
     func startConversion() async {
         guard let inputFile = inputFile else { return }
+        guard !isConverting else { return }
         
         isConverting = true
         

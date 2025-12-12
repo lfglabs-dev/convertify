@@ -40,29 +40,152 @@ struct ConversionProgress {
     var size: Int64
 }
 
+// MARK: - Thread-safe helpers (Swift 6 SendableClosureCaptures)
+
+private final class LockedString: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String = ""
+
+    func append(_ chunk: String) {
+        lock.lock()
+        value += chunk
+        lock.unlock()
+    }
+
+    func snapshot() -> String {
+        lock.lock()
+        let out = value
+        lock.unlock()
+        return out
+    }
+}
+
+private final class ReadGate: @unchecked Sendable {
+    private let lock = NSLock()
+
+    func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
+private final class FFmpegProgressParser: @unchecked Sendable {
+    private let lock = NSLock()
+    private let duration: TimeInterval
+    private let onProgress: @Sendable (ConversionProgress) -> Void
+
+    private var buffer: String = ""
+    private var currentProgress = ConversionProgress(
+        currentTime: 0,
+        percentage: 0,
+        speed: 0,
+        frame: 0,
+        fps: 0,
+        bitrate: "N/A",
+        size: 0
+    )
+
+    init(duration: TimeInterval, onProgress: @Sendable @escaping (ConversionProgress) -> Void) {
+        self.duration = duration
+        self.onProgress = onProgress
+    }
+
+    func consume(_ chunk: String) {
+        // Collect snapshots to emit outside the lock
+        var snapshots: [ConversionProgress] = []
+
+        lock.lock()
+        buffer += chunk
+
+        // Split into lines while preserving a possible partial last line.
+        let endsWithNewline = buffer.hasSuffix("\n")
+        let parts = buffer.split(separator: "\n", omittingEmptySubsequences: false)
+
+        let linesToProcess: ArraySlice<Substring>
+        if endsWithNewline {
+            linesToProcess = parts[...]
+            buffer = ""
+        } else {
+            linesToProcess = parts.dropLast()
+            buffer = String(parts.last ?? "")
+        }
+
+        for rawLine in linesToProcess {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            let kv = line.split(separator: "=", maxSplits: 1)
+            guard kv.count == 2 else { continue }
+
+            let key = kv[0].trimmingCharacters(in: .whitespaces)
+            let value = kv[1].trimmingCharacters(in: .whitespaces)
+
+            switch key {
+            case "frame":
+                currentProgress.frame = Int(value) ?? 0
+            case "fps":
+                currentProgress.fps = Double(value) ?? 0
+            case "bitrate":
+                currentProgress.bitrate = value
+            case "total_size":
+                currentProgress.size = Int64(value) ?? 0
+            case "out_time_us":
+                if let microseconds = Double(value) {
+                    currentProgress.currentTime = microseconds / 1_000_000
+                    if duration > 0 {
+                        currentProgress.percentage = min(currentProgress.currentTime / duration, 1.0)
+                    }
+                }
+            case "speed":
+                // Speed is like "1.5x" or "N/A"
+                let speedStr = value.replacingOccurrences(of: "x", with: "")
+                currentProgress.speed = Double(speedStr) ?? 0
+            case "progress":
+                if value == "continue" || value == "end" {
+                    snapshots.append(currentProgress)
+                }
+            default:
+                break
+            }
+        }
+
+        lock.unlock()
+
+        // Emit outside the lock to avoid blocking the pipe thread.
+        for snapshot in snapshots {
+            onProgress(snapshot)
+        }
+    }
+
+    func flushRemainder() {
+        lock.lock()
+        let remainder = buffer
+        buffer = ""
+        lock.unlock()
+
+        guard !remainder.isEmpty else { return }
+        // Treat the remainder as a complete line.
+        consume(remainder + "\n")
+    }
+}
+
 // MARK: - FFmpeg Service
 
+@MainActor
 class FFmpegService: ObservableObject {
     private var currentProcess: Process?
     private var isCancelled = false
     
-    /// Path to FFmpeg binary - tries Homebrew locations
-    private var ffmpegPath: String {
-        // Common Homebrew locations
-        let paths = [
-            "/opt/homebrew/bin/ffmpeg",  // Apple Silicon
-            "/usr/local/bin/ffmpeg",      // Intel
-            "/usr/bin/ffmpeg"             // System
-        ]
-        
-        for path in paths {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        
-        // Fallback to PATH
-        return "ffmpeg"
+    private var ffmpegExecutableURL: URL? {
+        ExecutableLocator.resolveExecutableURL(
+            named: "ffmpeg",
+            preferredAbsolutePaths: [
+                "/opt/homebrew/bin/ffmpeg",   // Apple Silicon Homebrew
+                "/usr/local/bin/ffmpeg",      // Intel Homebrew
+                "/usr/bin/ffmpeg"             // System (rarely present)
+            ]
+        )
     }
     
     /// Execute FFmpeg command and yield progress updates
@@ -92,28 +215,15 @@ class FFmpegService: ObservableObject {
     
     /// Check if FFmpeg is available
     func isAvailable() -> Bool {
-        FileManager.default.fileExists(atPath: ffmpegPath) || {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-            process.arguments = ["ffmpeg"]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationStatus == 0
-            } catch {
-                return false
-            }
-        }()
+        ffmpegExecutableURL != nil
     }
     
     /// Get FFmpeg version
     func getVersion() -> String? {
+        guard let ffmpegExecutableURL else { return nil }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.executableURL = ffmpegExecutableURL
         process.arguments = ["-version"]
         
         let pipe = Pipe()
@@ -142,10 +252,14 @@ class FFmpegService: ObservableObject {
     private func runProcess(
         command: FFmpegCommand,
         duration: TimeInterval,
-        onProgress: @escaping (ConversionProgress) -> Void
+        onProgress: @Sendable @escaping (ConversionProgress) -> Void
     ) async throws {
+        guard let ffmpegExecutableURL else {
+            throw FFmpegError.notFound
+        }
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.executableURL = ffmpegExecutableURL
         process.arguments = command.fullArguments
         
         let stdoutPipe = Pipe()
@@ -156,72 +270,25 @@ class FFmpegService: ObservableObject {
         
         currentProcess = process
         
-        // Progress parsing state
-        var currentProgress = ConversionProgress(
-            currentTime: 0,
-            percentage: 0,
-            speed: 0,
-            frame: 0,
-            fps: 0,
-            bitrate: "N/A",
-            size: 0
-        )
+        let progressParser = FFmpegProgressParser(duration: duration, onProgress: onProgress)
+        let stderrCollector = LockedString()
+        let stdoutReadGate = ReadGate()
+        let stderrReadGate = ReadGate()
         
         // Handle stdout (progress output)
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard self?.isCancelled != true else { return }
-            
-            let data = handle.availableData
-            guard !data.isEmpty,
-                  let output = String(data: data, encoding: .utf8) else { return }
-            
-            // Parse progress key=value pairs
-            for line in output.components(separatedBy: "\n") {
-                let parts = line.split(separator: "=", maxSplits: 1)
-                guard parts.count == 2 else { continue }
-                
-                let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
-                let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                
-                switch key {
-                case "frame":
-                    currentProgress.frame = Int(value) ?? 0
-                case "fps":
-                    currentProgress.fps = Double(value) ?? 0
-                case "bitrate":
-                    currentProgress.bitrate = value
-                case "total_size":
-                    currentProgress.size = Int64(value) ?? 0
-                case "out_time_us":
-                    if let microseconds = Double(value) {
-                        currentProgress.currentTime = microseconds / 1_000_000
-                        if duration > 0 {
-                            currentProgress.percentage = min(currentProgress.currentTime / duration, 1.0)
-                        }
-                    }
-                case "speed":
-                    // Speed is like "1.5x" or "N/A"
-                    let speedStr = value.replacingOccurrences(of: "x", with: "")
-                    currentProgress.speed = Double(speedStr) ?? 0
-                case "progress":
-                    if value == "continue" || value == "end" {
-                        onProgress(currentProgress)
-                    }
-                default:
-                    break
-                }
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            stdoutReadGate.withLock {
+                let data = handle.availableData
+                guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
+                progressParser.consume(output)
             }
         }
         
-        // Capture stderr for error messages with thread-safe access
-        let stderrQueue = DispatchQueue(label: "com.convertify.stderr")
-        var stderrOutput = ""
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let output = String(data: data, encoding: .utf8) {
-                stderrQueue.sync {
-                    stderrOutput += output
-                }
+            stderrReadGate.withLock {
+                let data = handle.availableData
+                guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
+                stderrCollector.append(output)
             }
         }
         
@@ -243,9 +310,27 @@ class FFmpegService: ObservableObject {
         // Clean up handlers
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        
-        // Synchronize to ensure any in-progress handler has completed
-        let finalStderrOutput = stderrQueue.sync { stderrOutput }
+
+        // Flush any remaining buffered output after handlers are removed.
+        let remainingStdout = stdoutReadGate.withLock {
+            stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        }
+        if let remainingOutStr = String(data: remainingStdout, encoding: .utf8), !remainingOutStr.isEmpty {
+            progressParser.consume(remainingOutStr)
+        }
+        progressParser.flushRemainder()
+
+        let remainingStderr = stderrReadGate.withLock {
+            stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        }
+        if let remainingErrStr = String(data: remainingStderr, encoding: .utf8), !remainingErrStr.isEmpty {
+            stderrCollector.append(remainingErrStr)
+        }
+
+        let finalStderrOutput = stderrCollector.snapshot()
+
+        stdoutPipe.fileHandleForReading.closeFile()
+        stderrPipe.fileHandleForReading.closeFile()
         
         currentProcess = nil
         
