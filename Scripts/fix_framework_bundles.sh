@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # fix_framework_bundles.sh
-# Converts shallow framework bundles to versioned bundles for macOS
-# Also strips x86_64 simulator architectures and fixes bundle identifiers for App Store
-# This script should be run as a Build Phase in Xcode
+# Convert shallow framework bundles to versioned bundles for macOS
+# Strip x86_64, fix bundle identifiers, and re-sign frameworks for App Store
 
 set -e
 
 FRAMEWORKS_PATH="${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
 APP_BUNDLE_ID="${PRODUCT_BUNDLE_IDENTIFIER}"
+CODE_SIGN_ID="${EXPANDED_CODE_SIGN_IDENTITY:-}"
 
 if [ ! -d "$FRAMEWORKS_PATH" ]; then
     echo "Frameworks directory not found, skipping"
@@ -18,22 +18,9 @@ fi
 echo "Processing frameworks in: $FRAMEWORKS_PATH"
 echo "App Bundle ID: $APP_BUNDLE_ID"
 
-# Function to fix bundle identifier in Info.plist
-fix_bundle_identifier() {
-    local plist_path="$1"
-    local framework_name="$2"
-    
-    if [ ! -f "$plist_path" ]; then
-        return 0
-    fi
-    
-    local current_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist_path" 2>/dev/null || echo "")
-    local new_id="${APP_BUNDLE_ID}.${framework_name}"
-    
-    if [ -n "$current_id" ] && [ "$current_id" != "$new_id" ]; then
-        echo "  Fixing bundle ID: $current_id -> $new_id"
-        /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $new_id" "$plist_path" 2>/dev/null || true
-    fi
+# Function to create valid bundle ID (replace underscores with hyphens)
+make_valid_bundle_id() {
+    echo "$1" | tr '_' '-'
 }
 
 # Function to strip x86_64 architecture from a binary
@@ -42,8 +29,6 @@ strip_simulator_archs() {
     if [ ! -f "$binary" ]; then
         return 0
     fi
-    
-    # Check if binary contains x86_64
     if lipo -info "$binary" 2>/dev/null | grep -q "x86_64"; then
         echo "  Stripping x86_64 from: $(basename "$binary")"
         lipo -remove x86_64 "$binary" -output "${binary}.tmp" 2>/dev/null || true
@@ -56,80 +41,65 @@ strip_simulator_archs() {
 process_framework() {
     local framework_path="$1"
     local framework_name=$(basename "$framework_path" .framework)
+    # Create valid bundle ID (no underscores allowed)
+    local safe_name=$(make_valid_bundle_id "$framework_name")
+    local new_bundle_id="${APP_BUNDLE_ID}.${safe_name}"
     
-    echo "Processing: $framework_name.framework"
+    echo "Processing: $framework_name.framework -> $new_bundle_id"
     
-    # Strip x86_64 from the binary
+    # Find and strip x86_64 from binary
+    local binary_path=""
     if [ -f "$framework_path/$framework_name" ]; then
-        strip_simulator_archs "$framework_path/$framework_name"
+        binary_path="$framework_path/$framework_name"
     elif [ -f "$framework_path/Versions/Current/$framework_name" ]; then
-        strip_simulator_archs "$framework_path/Versions/Current/$framework_name"
+        binary_path="$framework_path/Versions/Current/$framework_name"
     fi
     
-    # Fix bundle identifier in Info.plist (check both locations)
-    if [ -f "$framework_path/Info.plist" ]; then
-        fix_bundle_identifier "$framework_path/Info.plist" "$framework_name"
-    fi
-    if [ -f "$framework_path/Versions/Current/Resources/Info.plist" ]; then
-        fix_bundle_identifier "$framework_path/Versions/Current/Resources/Info.plist" "$framework_name"
-    fi
-    if [ -f "$framework_path/Resources/Info.plist" ]; then
-        fix_bundle_identifier "$framework_path/Resources/Info.plist" "$framework_name"
+    if [ -n "$binary_path" ]; then
+        strip_simulator_archs "$binary_path"
     fi
     
-    # Check if already a versioned bundle
-    if [ -d "$framework_path/Versions" ]; then
-        return 0
+    # Fix bundle identifier in all possible Info.plist locations
+    for plist in "$framework_path/Info.plist" \
+                 "$framework_path/Resources/Info.plist" \
+                 "$framework_path/Versions/Current/Resources/Info.plist" \
+                 "$framework_path/Versions/A/Resources/Info.plist"; do
+        if [ -f "$plist" ]; then
+            echo "  Updating bundle ID in: $plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $new_bundle_id" "$plist" 2>/dev/null || true
+        fi
+    done
+    
+    # Convert shallow bundle to versioned if needed
+    if [ ! -d "$framework_path/Versions" ] && [ -f "$framework_path/Info.plist" ]; then
+        echo "  Converting to versioned bundle"
+        local temp_dir=$(mktemp -d)
+        local version_path="$temp_dir/Versions/A"
+        mkdir -p "$version_path/Resources"
+        
+        [ -f "$framework_path/$framework_name" ] && cp -p "$framework_path/$framework_name" "$version_path/$framework_name"
+        cp -p "$framework_path/Info.plist" "$version_path/Resources/Info.plist"
+        [ -d "$framework_path/Headers" ] && cp -Rp "$framework_path/Headers" "$version_path/Headers"
+        [ -d "$framework_path/Modules" ] && cp -Rp "$framework_path/Modules" "$version_path/Modules"
+        
+        (cd "$temp_dir/Versions" && ln -sf "A" "Current")
+        [ -f "$version_path/$framework_name" ] && (cd "$temp_dir" && ln -sf "Versions/Current/$framework_name" "$framework_name")
+        (cd "$temp_dir" && ln -sf "Versions/Current/Resources" "Resources")
+        [ -d "$version_path/Headers" ] && (cd "$temp_dir" && ln -sf "Versions/Current/Headers" "Headers")
+        [ -d "$version_path/Modules" ] && (cd "$temp_dir" && ln -sf "Versions/Current/Modules" "Modules")
+        
+        rm -rf "$framework_path"
+        mv "$temp_dir" "$framework_path"
     fi
     
-    # Check if Info.plist exists at root (shallow bundle indicator)
-    if [ ! -f "$framework_path/Info.plist" ]; then
-        return 0
+    # Re-sign framework with correct identifier
+    echo "  Re-signing with identifier: $new_bundle_id"
+    if [ -n "$CODE_SIGN_ID" ] && [ "$CODE_SIGN_ID" != "-" ]; then
+        codesign --force --sign "$CODE_SIGN_ID" --identifier "$new_bundle_id" --timestamp=none --generate-entitlement-der "$framework_path" 2>/dev/null || \
+        codesign --force --sign "$CODE_SIGN_ID" --identifier "$new_bundle_id" "$framework_path" 2>/dev/null || true
+    else
+        codesign --force --sign - --identifier "$new_bundle_id" "$framework_path" 2>/dev/null || true
     fi
-    
-    echo "  Converting to versioned bundle"
-    
-    # Create temporary directory for new structure
-    local temp_dir=$(mktemp -d)
-    local version_path="$temp_dir/Versions/A"
-    mkdir -p "$version_path/Resources"
-    
-    # Copy binary
-    if [ -f "$framework_path/$framework_name" ]; then
-        cp -p "$framework_path/$framework_name" "$version_path/$framework_name"
-    fi
-    
-    # Copy Info.plist to Resources
-    cp -p "$framework_path/Info.plist" "$version_path/Resources/Info.plist"
-    
-    # Copy Headers if exists
-    if [ -d "$framework_path/Headers" ]; then
-        cp -Rp "$framework_path/Headers" "$version_path/Headers"
-    fi
-    
-    # Copy Modules if exists  
-    if [ -d "$framework_path/Modules" ]; then
-        cp -Rp "$framework_path/Modules" "$version_path/Modules"
-    fi
-    
-    # Create Current symlink
-    (cd "$temp_dir/Versions" && ln -sf "A" "Current")
-    
-    # Create top-level symlinks
-    if [ -f "$version_path/$framework_name" ]; then
-        (cd "$temp_dir" && ln -sf "Versions/Current/$framework_name" "$framework_name")
-    fi
-    (cd "$temp_dir" && ln -sf "Versions/Current/Resources" "Resources")
-    if [ -d "$version_path/Headers" ]; then
-        (cd "$temp_dir" && ln -sf "Versions/Current/Headers" "Headers")
-    fi
-    if [ -d "$version_path/Modules" ]; then
-        (cd "$temp_dir" && ln -sf "Versions/Current/Modules" "Modules")
-    fi
-    
-    # Replace the original framework
-    rm -rf "$framework_path"
-    mv "$temp_dir" "$framework_path"
 }
 
 # Process all frameworks
