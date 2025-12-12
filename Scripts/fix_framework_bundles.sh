@@ -2,6 +2,7 @@
 
 # fix_framework_bundles.sh
 # Converts shallow framework bundles to versioned bundles for macOS
+# Also strips x86_64 simulator architectures for App Store submission
 # This script should be run as a Build Phase in Xcode
 
 set -e
@@ -13,11 +14,40 @@ if [ ! -d "$FRAMEWORKS_PATH" ]; then
     exit 0
 fi
 
-echo "Converting shallow framework bundles in: $FRAMEWORKS_PATH"
+echo "Processing frameworks in: $FRAMEWORKS_PATH"
+
+# Function to strip x86_64 architecture from a binary
+strip_simulator_archs() {
+    local binary="$1"
+    if [ ! -f "$binary" ]; then
+        return 0
+    fi
+    
+    # Check if binary contains x86_64
+    if lipo -info "$binary" 2>/dev/null | grep -q "x86_64"; then
+        echo "  Stripping x86_64 from: $(basename "$binary")"
+        # Get all architectures except x86_64
+        local archs=$(lipo -info "$binary" | sed 's/.*: //' | tr ' ' '\n' | grep -v x86_64 | tr '\n' ' ')
+        if [ -n "$archs" ]; then
+            lipo -extract $archs "$binary" -output "${binary}.tmp" 2>/dev/null || \
+            lipo -remove x86_64 "$binary" -output "${binary}.tmp" 2>/dev/null || true
+            if [ -f "${binary}.tmp" ]; then
+                mv "${binary}.tmp" "$binary"
+            fi
+        fi
+    fi
+}
 
 convert_to_versioned_bundle() {
     local framework_path="$1"
     local framework_name=$(basename "$framework_path" .framework)
+    
+    # Strip x86_64 from the binary first (works for both shallow and versioned)
+    if [ -f "$framework_path/$framework_name" ]; then
+        strip_simulator_archs "$framework_path/$framework_name"
+    elif [ -f "$framework_path/Versions/Current/$framework_name" ]; then
+        strip_simulator_archs "$framework_path/Versions/Current/$framework_name"
+    fi
     
     # Check if already a versioned bundle
     if [ -d "$framework_path/Versions" ]; then
@@ -29,7 +59,7 @@ convert_to_versioned_bundle() {
         return 0
     fi
     
-    echo "Converting: $framework_name.framework"
+    echo "Converting to versioned bundle: $framework_name.framework"
     
     # Create temporary directory for new structure
     local temp_dir=$(mktemp -d)
@@ -81,5 +111,4 @@ for framework in "$FRAMEWORKS_PATH"/*.framework; do
     fi
 done
 
-echo "Framework bundle conversion complete"
-
+echo "Framework processing complete"
