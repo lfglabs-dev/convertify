@@ -48,6 +48,7 @@ final class FilterGraphBuilder {
     }
     
     /// Build a GIF filter string with palette generation
+    /// Note: Uses [in] and [out] labels for avfilter_graph_parse_ptr API compatibility
     static func buildGifFilterString(
         fps: Int = 15,
         width: Int = 480,
@@ -67,7 +68,9 @@ final class FilterGraphBuilder {
         let preFilters = baseFilters.joined(separator: ",")
         
         // Split -> palettegen -> paletteuse
-        return "[0:v] \(preFilters),split [a][b];[a] palettegen=stats_mode=single [p];[b][p] paletteuse=dither=\(ditherMode):bayer_scale=\(bayerScale):diff_mode=rectangle"
+        // Use [in] instead of [0:v] for API compatibility with avfilter_graph_parse_ptr
+        // The buffer source is named "in" and buffer sink is named "out"
+        return "[in] \(preFilters),split [a][b];[a] palettegen=stats_mode=single [p];[b][p] paletteuse=dither=\(ditherMode):bayer_scale=\(bayerScale):diff_mode=rectangle [out]"
     }
     
     /// Build an audio filter string
@@ -493,8 +496,12 @@ final class ImageTranscoder {
         var outputContext: UnsafeMutablePointer<AVFormatContext>? = nil
         var decoderContext: UnsafeMutablePointer<AVCodecContext>? = nil
         var encoderContext: UnsafeMutablePointer<AVCodecContext>? = nil
+        var swsContext: OpaquePointer? = nil
+        var convertedFrame: UnsafeMutablePointer<AVFrame>? = nil
         
         defer {
+            if swsContext != nil { sws_freeContext(swsContext) }
+            if convertedFrame != nil { av_frame_free(&convertedFrame) }
             if decoderContext != nil { avcodec_free_context(&decoderContext) }
             if encoderContext != nil { avcodec_free_context(&encoderContext) }
             if let outCtx = outputContext {
@@ -551,7 +558,7 @@ final class ImageTranscoder {
         
         // Determine output format and encoder
         let outputExt = (outputPath as NSString).pathExtension.lowercased()
-        let (encoderName, codecID) = getImageEncoder(for: outputExt)
+        let (encoderName, _) = getImageEncoder(for: outputExt)
         
         guard let encoder = avcodec_find_encoder_by_name(encoderName) else {
             throw FFmpegKitError.codecNotFound(encoderName)
@@ -624,17 +631,79 @@ final class ImageTranscoder {
             
             ret = avcodec_receive_frame(decCtx, frame)
             if ret >= 0 {
-                // Encode and write
-                ret = avcodec_send_frame(encCtx, frame)
-                if ret >= 0 {
-                    var outPacket = av_packet_alloc()
-                    defer { av_packet_free(&outPacket) }
+                // Determine which frame to encode
+                var frameToEncode = frame
+                
+                // Check if pixel format conversion is needed
+                let srcPixFmt = AVPixelFormat(rawValue: frame!.pointee.format)
+                let dstPixFmt = encCtx.pointee.pix_fmt
+                let needsConversion = srcPixFmt != dstPixFmt ||
+                                     frame!.pointee.width != targetWidth ||
+                                     frame!.pointee.height != targetHeight
+                
+                if needsConversion {
+                    // Allocate sws context for pixel format / resolution conversion
+                    swsContext = sws_getContext(
+                        frame!.pointee.width, frame!.pointee.height, srcPixFmt,
+                        targetWidth, targetHeight, dstPixFmt,
+                        SWS_LANCZOS, nil, nil, nil
+                    )
                     
-                    ret = avcodec_receive_packet(encCtx, outPacket)
-                    if ret >= 0 {
-                        av_interleaved_write_frame(outputContext, outPacket)
+                    guard swsContext != nil else {
+                        throw FFmpegKitError.allocationFailed("sws context")
                     }
+                    
+                    // Allocate converted frame
+                    convertedFrame = av_frame_alloc()
+                    guard let convFrame = convertedFrame else {
+                        throw FFmpegKitError.allocationFailed("converted frame")
+                    }
+                    
+                    convFrame.pointee.width = targetWidth
+                    convFrame.pointee.height = targetHeight
+                    convFrame.pointee.format = dstPixFmt.rawValue
+                    
+                    ret = av_frame_get_buffer(convFrame, 0)
+                    guard ret >= 0 else {
+                        throw FFmpegKitError.allocationFailed("converted frame buffer")
+                    }
+                    
+                    // Perform the conversion
+                    sws_scale(
+                        swsContext,
+                        frame!.pointee.data.map { $0 }.withUnsafeBufferPointer { ptr in
+                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
+                        },
+                        frame!.pointee.linesize.map { $0 }.withUnsafeBufferPointer { ptr in
+                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
+                        },
+                        0, frame!.pointee.height,
+                        convFrame.pointee.data.map { $0 }.withUnsafeBufferPointer { ptr in
+                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
+                        },
+                        convFrame.pointee.linesize.map { $0 }.withUnsafeBufferPointer { ptr in
+                            UnsafeMutablePointer(mutating: ptr.baseAddress!)
+                        }
+                    )
+                    
+                    convFrame.pointee.pts = frame!.pointee.pts
+                    frameToEncode = convFrame
                 }
+                
+                // Encode and write
+                ret = avcodec_send_frame(encCtx, frameToEncode)
+                guard ret >= 0 else {
+                    throw FFmpegKitError.encodingFailed(ret)
+                }
+                
+                var outPacket = av_packet_alloc()
+                defer { av_packet_free(&outPacket) }
+                
+                ret = avcodec_receive_packet(encCtx, outPacket)
+                if ret >= 0 {
+                    av_interleaved_write_frame(outputContext, outPacket)
+                }
+                
                 break  // Only need one frame for images
             }
         }
