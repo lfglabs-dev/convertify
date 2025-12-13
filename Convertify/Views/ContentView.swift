@@ -16,44 +16,97 @@ struct ContentView: View {
     @State private var dragOver = false
     @State private var selectedTool: ConversionTool = .convert
     
+    // Layout constants (Books-style)
+    private let sidebarWidth: CGFloat = 220
+    private let outerInset: CGFloat = 10
+    private let topInset: CGFloat = 10
+    private let gap: CGFloat = 12
+    private let cornerRadius: CGFloat = 12
+    
     var body: some View {
-        ZStack {
-            // MARK: Window Background
-            // Using .sidebar material for a more opaque dark glass effect.
-            // This provides consistent transparency across the entire window,
-            // including the title bar area (which uses fullSizeContentView).
-            // The title bar and main content area intentionally share the same
-            // opacity to create a unified, seamless appearance.
-            // NOTE: .sidebar is more opaque than .hudWindow for better readability
-            VisualEffectBackground(material: .sidebar)
-                .ignoresSafeArea(.all)
-            
-            HStack(spacing: 0) {
-                // Floating Sidebar
-                sidebar
-                    .frame(width: 220)
-                    .background {
-                        ZStack {
-                            VisualEffectBackground(material: .sidebar)
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(.white.opacity(0.08), lineWidth: 1)
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .shadow(color: .black.opacity(0.2), radius: 15, x: 0, y: 5)
-                    .padding(.leading, 14)
-                    .padding(.top, 14)
-                    .padding(.bottom, 14)
-                
-                // Main content
-                mainContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.trailing, 14)
-                    .padding(.top, 14)
-                    .padding(.bottom, 14)
+        ZStack(alignment: .topLeading) {
+            // MARK: Solid Window Background (like Books app)
+            ZStack {
+                LinearGradient(
+                    colors: [Color(hex: "17171A"), Color(hex: "121214")],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                RadialGradient(
+                    colors: [Color.white.opacity(0.06), Color.clear],
+                    center: .topLeading,
+                    startRadius: 40,
+                    endRadius: 520
+                )
             }
+            .ignoresSafeArea()
+            
+            // Main content (detail panel)
+            mainContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.leading, outerInset + sidebarWidth + gap)
+                .padding(.trailing, outerInset)
+                .padding(.bottom, outerInset)
+                .padding(.top, 0)
+                .background {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 0,
+                        bottomLeadingRadius: cornerRadius,
+                        bottomTrailingRadius: cornerRadius,
+                        topTrailingRadius: 0
+                    )
+                    .fill(Color(hex: "161618"))
+                }
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 0,
+                        bottomLeadingRadius: cornerRadius,
+                        bottomTrailingRadius: cornerRadius,
+                        topTrailingRadius: 0
+                    )
+                )
+                .overlay {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 0,
+                        bottomLeadingRadius: cornerRadius,
+                        bottomTrailingRadius: cornerRadius,
+                        topTrailingRadius: 0
+                    )
+                    .strokeBorder(.white.opacity(0.05), lineWidth: 1)
+                }
+            
+            // Floating Sidebar (Books-style glass panel)
+            sidebar
+                .frame(width: sidebarWidth)
+                .background {
+                    ZStack {
+                        // Dark base for depth (more opaque for solid feel)
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Color(hex: "1D1D1F").opacity(0.85))
+                        // System Liquid Glass (wallpaper/theme-derived tint)
+                        GlassBackground(material: .sidebar, blendingMode: .withinWindow)
+                            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay {
+                    // Subtle inner highlight like system glass edges
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.14), .white.opacity(0.04)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                }
+                .shadow(color: .black.opacity(0.45), radius: 28, x: 0, y: 14)
+                .padding(.leading, outerInset)
+                .padding(.bottom, outerInset)
+                .padding(.top, topInset)
         }
-        // Minimum size ensures sidebar content is always fully visible
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 820, minHeight: 680)
         .fileImporter(
             isPresented: $showFilePicker,
@@ -68,8 +121,13 @@ struct ContentView: View {
     
     // MARK: - Sidebar
     
+    private let titlebarSpacerHeight: CGFloat = 52 // Space for traffic lights
+    
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Titlebar space (traffic lights clearance)
+            Spacer().frame(height: titlebarSpacerHeight)
+            
             // App branding
             HStack(spacing: 10) {
                 ZStack {
@@ -89,15 +147,14 @@ struct ContentView: View {
                 }
                 
                 Text("Convertify")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .font(.system(size: 16, weight: .bold))
             }
             .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 24)
+            .padding(.bottom, 16)
             
             // Tools section
-            VStack(alignment: .leading, spacing: 4) {
-                SidebarSectionHeader(title: "TOOLS")
+            VStack(alignment: .leading, spacing: 2) {
+                SidebarSectionHeader(title: "Tools")
                 
                 ForEach(ConversionTool.allCases) { tool in
                     SidebarToolButton(
@@ -117,9 +174,9 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             
             // Presets section
-            VStack(alignment: .leading, spacing: 4) {
-                SidebarSectionHeader(title: "QUICK PRESETS")
-                    .padding(.top, 20)
+            VStack(alignment: .leading, spacing: 2) {
+                SidebarSectionHeader(title: "Quick Presets")
+                    .padding(.top, 12)
                 
                 ForEach(QuickPreset.allCases) { preset in
                     SidebarPresetButton(preset: preset) {
@@ -131,26 +188,29 @@ struct ContentView: View {
             
             Spacer()
             
-            // System info
+            // System info (subtle, like Offline Cinema)
             VStack(alignment: .leading, spacing: 8) {
-                Divider().padding(.horizontal, 4)
-                
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(manager.hardwareAcceleration.hasVideoToolbox ? Color(hex: "22C55E") : Color(hex: "F97316"))
-                        .frame(width: 8, height: 8)
+                HStack(spacing: 10) {
+                    // Subtle status icon
+                    Image(systemName: manager.hardwareAcceleration.hasVideoToolbox ? "bolt.fill" : "cpu")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.primary.opacity(0.5))
+                        .frame(width: 22)
                     
-                    VStack(alignment: .leading, spacing: 1) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(manager.hardwareAcceleration.hasVideoToolbox ? "GPU Accelerated" : "Software Encoding")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.primary.opacity(0.8))
+                            .font(.system(size: 12))
+                            .foregroundColor(.primary.opacity(0.6))
                         
                         if let gpu = manager.hardwareAcceleration.gpuName {
                             Text(gpu)
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
+                                .font(.system(size: 11))
+                                .foregroundColor(.primary.opacity(0.4))
+                                .lineLimit(1)
                         }
                     }
+                    
+                    Spacer()
                 }
             }
             .padding(.horizontal, 16)
@@ -461,11 +521,11 @@ struct SidebarSectionHeader: View {
     
     var body: some View {
         Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundColor(.secondary)
-            .tracking(0.5)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
     }
 }
 
@@ -480,21 +540,21 @@ struct SidebarToolButton: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: tool.icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(isSelected ? tool.color : .secondary)
-                    .frame(width: 20)
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundColor(isSelected ? tool.color : .primary)
+                    .frame(width: 22)
                 
                 Text(tool.rawValue)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundColor(isSelected ? .primary : .secondary)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.primary)
                 
                 Spacer()
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 7)
             .background {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isSelected ? tool.color.opacity(0.12) : (isHovered ? .primary.opacity(0.05) : .clear))
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isSelected ? .white.opacity(0.12) : (isHovered ? .white.opacity(0.06) : .clear))
             }
         }
         .buttonStyle(.plain)
@@ -512,21 +572,21 @@ struct SidebarPresetButton: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: preset.icon)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .frame(width: 20)
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundColor(.primary.opacity(0.6))
+                    .frame(width: 22)
                 
                 Text(preset.rawValue)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 13))
+                    .foregroundColor(.primary.opacity(0.6))
                 
                 Spacer()
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.vertical, 7)
             .background {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.primary.opacity(isHovered ? 0.05 : 0))
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHovered ? .white.opacity(0.06) : .clear)
             }
         }
         .buttonStyle(.plain)
@@ -1468,23 +1528,23 @@ struct CropPreviewSection: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .position(x: outerGeo.size.width / 2, y: outerGeo.size.height / 2)
                                 
-                            // Edge handles
-                                edgeHandle(width: 16, height: max(40, cropRect.height * 0.4))
+                            // Edge handles (thin bars)
+                                edgeHandle(width: 6, height: max(32, cropRect.height * 0.35))
                                 .position(x: handlePadding + cropRect.minX, y: handlePadding + cropRect.midY)
                                 .gesture(makeDragGesture(edge: .left, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeLeftRight) }
                                 
-                                edgeHandle(width: 16, height: max(40, cropRect.height * 0.4))
+                                edgeHandle(width: 6, height: max(32, cropRect.height * 0.35))
                                 .position(x: handlePadding + cropRect.maxX, y: handlePadding + cropRect.midY)
                                 .gesture(makeDragGesture(edge: .right, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeLeftRight) }
                                 
-                                edgeHandle(width: max(40, cropRect.width * 0.4), height: 16)
+                                edgeHandle(width: max(32, cropRect.width * 0.35), height: 6)
                                 .position(x: handlePadding + cropRect.midX, y: handlePadding + cropRect.minY)
                                 .gesture(makeDragGesture(edge: .top, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeUpDown) }
                                 
-                                edgeHandle(width: max(40, cropRect.width * 0.4), height: 16)
+                                edgeHandle(width: max(32, cropRect.width * 0.35), height: 6)
                                 .position(x: handlePadding + cropRect.midX, y: handlePadding + cropRect.maxY)
                                 .gesture(makeDragGesture(edge: .bottom, size: insetSize))
                                     .onHover { h in updateCursor(h, .resizeUpDown) }
@@ -1840,24 +1900,24 @@ struct CropPreviewSection: View {
         case topLeft, topRight, bottomLeft, bottomRight
     }
     
-    // Create edge handle view
+    // Create edge handle view (thinner, more subtle)
     @ViewBuilder
     private func edgeHandle(width: CGFloat, height: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(Color.white.opacity(0.9))
+        RoundedRectangle(cornerRadius: 2)
+            .fill(Color.white.opacity(0.85))
             .frame(width: width, height: height)
-            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-            .contentShape(Rectangle().size(width: width + 20, height: height + 20))
+            .shadow(color: .black.opacity(0.25), radius: 1.5, y: 1)
+            .contentShape(Rectangle().size(width: width + 16, height: height + 16))
     }
     
-    // Create corner handle view
+    // Create corner handle view (smaller, more subtle)
     @ViewBuilder
     private func cornerHandle() -> some View {
         Circle()
             .fill(Color.white)
-            .frame(width: 14, height: 14)
-            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-            .contentShape(Circle().size(width: 30, height: 30))
+            .frame(width: 10, height: 10)
+            .shadow(color: .black.opacity(0.25), radius: 1.5, y: 1)
+            .contentShape(Circle().size(width: 28, height: 28))
     }
     
     // Update cursor helper

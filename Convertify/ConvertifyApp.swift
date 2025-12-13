@@ -18,9 +18,7 @@ struct ConvertifyApp: App {
             ContentView()
                 .environmentObject(conversionManager)
         }
-        .windowStyle(.automatic)
-        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
-        // Default size is taller to ensure the full sidebar/navbar is visible without scrolling
+        .windowStyle(.hiddenTitleBar) // Use hiddenTitleBar to remove system titlebar/toolbar
         .defaultSize(width: 820, height: 700)
     }
 }
@@ -29,8 +27,9 @@ struct ConvertifyApp: App {
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
+    private let trafficLights = TrafficLightsPositioner(offsetX: 19, offsetY: -15)
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Activate the app and bring to front
         NSApp.activate(ignoringOtherApps: true)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -42,7 +41,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // Bring window to front when clicking dock icon
         if !flag {
             for window in sender.windows {
                 window.makeKeyAndOrderFront(nil)
@@ -52,7 +50,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidBecomeActive(_ notification: Notification) {
-        // Ensure windows come to front when app becomes active
         for window in NSApplication.shared.windows {
             window.makeKeyAndOrderFront(nil)
         }
@@ -61,21 +58,116 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func configureWindow(_ window: NSWindow) {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.toolbar = nil
+        window.toolbar = nil // Critical: removes glass titlebar
         
-        // Ensure proper style mask for resizing
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-        
-        // Set proper window level and behavior
         window.level = .normal
         window.collectionBehavior = [.managed, .fullScreenPrimary]
         window.isReleasedWhenClosed = false
-        
-        // Accept mouse events
         window.acceptsMouseMovedEvents = true
         window.ignoresMouseEvents = false
+        window.isMovableByWindowBackground = true
+        
+        // Position traffic lights inside the floating sidebar
+        trafficLights.attach(to: window)
     }
 }
+
+// MARK: - Traffic Lights Positioner
+
+@MainActor
+final class TrafficLightsPositioner {
+    private let offsetX: CGFloat
+    private let offsetY: CGFloat
+    private var observers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
+    
+    init(offsetX: CGFloat, offsetY: CGFloat) {
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+    }
+    
+    func attach(to window: NSWindow) {
+        let id = ObjectIdentifier(window)
+        if observers[id] != nil { return }
+        
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.apply(to: window)
+        }
+        
+        let center = NotificationCenter.default
+        var tokens: [NSObjectProtocol] = [
+            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self, weak window] _ in
+                Task { @MainActor [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.apply(to: window)
+                }
+            },
+            center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self, weak window] _ in
+                Task { @MainActor [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.apply(to: window)
+                }
+            },
+            center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main) { [weak self, weak window] _ in
+                Task { @MainActor [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.apply(to: window)
+                }
+            }
+        ]
+        
+        let closeObserver = center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] notification in
+            guard let closingWindow = notification.object as? NSWindow else { return }
+            let closingId = ObjectIdentifier(closingWindow)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let tokens = self.observers[closingId] {
+                    tokens.forEach { NotificationCenter.default.removeObserver($0) }
+                    self.observers.removeValue(forKey: closingId)
+                }
+            }
+        }
+        tokens.append(closeObserver)
+        
+        observers[id] = tokens
+    }
+    
+    private func apply(to window: NSWindow) {
+        guard let close = window.standardWindowButton(.closeButton),
+              let mini = window.standardWindowButton(.miniaturizeButton),
+              let zoom = window.standardWindowButton(.zoomButton) else { return }
+        
+        let baseline = Baseline.ensure(on: window, close: close.frame.origin, mini: mini.frame.origin, zoom: zoom.frame.origin)
+        
+        close.setFrameOrigin(NSPoint(x: baseline.close.x + offsetX, y: baseline.close.y + offsetY))
+        mini.setFrameOrigin(NSPoint(x: baseline.mini.x + offsetX, y: baseline.mini.y + offsetY))
+        zoom.setFrameOrigin(NSPoint(x: baseline.zoom.x + offsetX, y: baseline.zoom.y + offsetY))
+    }
+    
+    private final class Baseline: NSObject {
+        let close: NSPoint
+        let mini: NSPoint
+        let zoom: NSPoint
+        
+        init(close: NSPoint, mini: NSPoint, zoom: NSPoint) {
+            self.close = close
+            self.mini = mini
+            self.zoom = zoom
+        }
+        
+        static func ensure(on window: NSWindow, close: NSPoint, mini: NSPoint, zoom: NSPoint) -> Baseline {
+            if let existing = objc_getAssociatedObject(window, &baselineKey) as? Baseline {
+                return existing
+            }
+            let created = Baseline(close: close, mini: mini, zoom: zoom)
+            objc_setAssociatedObject(window, &baselineKey, created, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            return created
+        }
+    }
+}
+
+private var baselineKey: UInt8 = 0
 
 // MARK: - Conversion Manager (Global State)
 
