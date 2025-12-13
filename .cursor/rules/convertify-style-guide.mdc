@@ -1,0 +1,503 @@
+---
+description: Convertify design philosophy, patterns, and macOS native app best practices
+globs: ["**/*.swift", "**/Info.plist", "**/*.entitlements"]
+alwaysApply: true
+---
+
+# Convertify Style Guide
+
+## Design Philosophy
+
+Convertify is a **native macOS FFmpeg wrapper** that transforms complex command-line media conversion into an elegant, intuitive experience. The design prioritizes **simplicity without sacrificing power** — opinionated defaults for most users, with advanced options available when needed.
+
+### Core Principles
+
+1. **Drag, Drop, Convert** — The primary interaction should be effortless. Drop a file, pick a format, hit convert.
+
+2. **Tool-Focused UI** — Each conversion tool (Convert, Compress, Trim, etc.) has its own personality with distinct colors and contextual options.
+
+3. **Sensible Defaults** — Smart format detection, quality presets, and hardware acceleration without user configuration.
+
+4. **Native Glass Aesthetic** — Translucent materials, subtle shadows, and system-native behaviors that feel at home on macOS.
+
+5. **Progressive Disclosure** — Simple interface by default, advanced options revealed on demand.
+
+---
+
+## Visual Design
+
+### Color System
+
+Each tool has a distinctive accent color for visual identity:
+
+```swift
+// Tool Colors
+.convert     → Color(hex: "6366F1")  // Indigo
+.compress    → Color(hex: "F59E0B")  // Amber
+.extractAudio → Color(hex: "EC4899") // Pink
+.trim        → Color(hex: "10B981")  // Emerald
+.toGif       → Color(hex: "8B5CF6")  // Violet
+.resize      → Color(hex: "3B82F6")  // Blue
+
+// Media Type Colors
+.video   → Color(hex: "3B82F6")  // Blue
+.audio   → Color(hex: "F97316")  // Orange
+.image   → Color(hex: "22C55E")  // Green
+
+// Quality Indicators
+.good    → Color(hex: "22C55E")  // Green
+.warning → Color(hex: "EAB308")  // Yellow
+.danger  → Color(hex: "EF4444")  // Red
+
+// Sidebar Gradient
+LinearGradient(colors: [Color(hex: "6366F1"), Color(hex: "8B5CF6")], ...)
+```
+
+### Typography
+
+| Element | Style |
+|---------|-------|
+| App title | 16pt bold rounded |
+| Section headers | 10pt semibold uppercase, tracking 0.5 |
+| Tool buttons | 13pt medium |
+| Preset buttons | 12pt regular |
+| Option labels | 12pt medium |
+| Info text | 11pt regular secondary |
+| Monospaced values | 12pt semibold monospaced |
+
+### Spacing & Layout
+
+| Element | Value |
+|---------|-------|
+| Window min size | 820 × 680 |
+| Sidebar width | 220pt |
+| Content padding | 14pt |
+| Card padding | 18pt |
+| Card corner radius | 14pt |
+| Button corner radius | 8-10pt |
+| Grid item spacing | 8pt |
+| Section spacing | 16-24pt |
+
+---
+
+## Window Configuration (Books-style)
+
+### Solid Background with Floating Sidebar
+
+```swift
+// Window style - hidden titlebar to remove system glass bar
+.windowStyle(.hiddenTitleBar)
+
+// Window configuration (AppDelegate)
+window.titlebarAppearsTransparent = true
+window.titleVisibility = .hidden
+window.toolbar = nil  // Critical: removes glass titlebar
+window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+window.isMovableByWindowBackground = true
+```
+
+### Layout Constants
+
+```swift
+private let sidebarWidth: CGFloat = 220
+private let outerInset: CGFloat = 10
+private let topInset: CGFloat = 10
+private let gap: CGFloat = 12
+private let cornerRadius: CGFloat = 12
+private let titlebarSpacerHeight: CGFloat = 52
+```
+
+### Solid Dark Background
+
+```swift
+ZStack {
+    LinearGradient(
+        colors: [Color(hex: "17171A"), Color(hex: "121214")],
+        startPoint: .top,
+        endPoint: .bottom
+    )
+    RadialGradient(
+        colors: [Color.white.opacity(0.06), Color.clear],
+        center: .topLeading,
+        startRadius: 40,
+        endRadius: 520
+    )
+}
+.ignoresSafeArea()
+```
+
+### Floating Glass Sidebar
+
+```swift
+sidebar
+    .frame(width: sidebarWidth)
+    .background {
+        ZStack {
+            // Dark base for depth
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color(hex: "1D1D1F").opacity(0.65))
+            // System glass layer
+            VisualEffectBackground(material: .sidebar)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    .overlay {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .strokeBorder(
+                LinearGradient(colors: [.white.opacity(0.14), .white.opacity(0.04)], ...),
+                lineWidth: 1
+            )
+    }
+    .shadow(color: .black.opacity(0.45), radius: 28, x: 0, y: 14)
+    .padding(.leading, outerInset)
+    .padding(.bottom, outerInset)
+    .padding(.top, topInset)
+```
+
+### Traffic Lights Positioning
+
+Use `TrafficLightsPositioner` to offset window buttons inside the floating sidebar:
+
+```swift
+// AppDelegate
+trafficLights = TrafficLightsPositioner(offsetX: 8, offsetY: -6)
+trafficLights.attach(to: window)
+
+// Sidebar includes titlebar spacer
+Spacer().frame(height: titlebarSpacerHeight)  // 52pt for traffic lights clearance
+```
+
+---
+
+## Component Patterns
+
+### Option Cards
+
+Consistent container for grouped options:
+
+```swift
+struct OptionCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.5)
+            
+            content
+        }
+        .padding(18)
+        .background {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.primary.opacity(0.03))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(.primary.opacity(0.06), lineWidth: 1)
+                }
+        }
+    }
+}
+```
+
+### Format Selection Cells
+
+```swift
+Text(format.rawValue)
+    .font(.system(size: 11, weight: .semibold))
+    .foregroundColor(isSelected ? .white : .primary.opacity(0.8))
+    .frame(maxWidth: .infinity)
+    .frame(height: 38)
+    .background {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(isSelected ? format.color : .primary.opacity(isHovered ? 0.06 : 0.03))
+    }
+```
+
+### Primary Action Button
+
+```swift
+HStack(spacing: 8) {
+    Image(systemName: buttonIcon)
+    Text(buttonLabel)
+}
+.font(.system(size: 14, weight: .semibold))
+.foregroundColor(.white)
+.frame(maxWidth: .infinity)
+.frame(height: 44)
+.background(RoundedRectangle(cornerRadius: 10).fill(tool.color))
+.shadow(color: tool.color.opacity(isHovered ? 0.4 : 0.25), radius: isHovered ? 16 : 10, y: 4)
+```
+
+### Drop Zone
+
+```swift
+VStack(spacing: 28) {
+    // Circular icon with tool color
+    ZStack {
+        Circle()
+            .fill(selectedTool.color.opacity(0.1))
+            .frame(width: 88, height: 88)
+        Circle()
+            .strokeBorder(selectedTool.color.opacity(0.2), lineWidth: 1)
+        Image(systemName: selectedTool.icon)
+            .font(.system(size: 30, weight: .medium))
+            .foregroundColor(selectedTool.color)
+    }
+    
+    // Title + subtitle
+    VStack(spacing: 8) {
+        Text(selectedTool.dropTitle)
+            .font(.system(size: 20, weight: .semibold))
+        Text(selectedTool.dropSubtitle)
+            .font(.system(size: 13))
+            .foregroundColor(.secondary)
+    }
+}
+.padding(48)
+.background {
+    RoundedRectangle(cornerRadius: 20)
+        .fill(.primary.opacity(dragOver ? 0.04 : 0.02))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(
+                    dragOver ? tool.color.opacity(0.5) : .primary.opacity(0.08),
+                    style: StrokeStyle(lineWidth: dragOver ? 2 : 1, dash: dragOver ? [] : [8, 6])
+                )
+        }
+}
+```
+
+---
+
+## Sidebar Components
+
+### Section Header
+
+```swift
+Text(title)
+    .font(.system(size: 10, weight: .semibold))
+    .foregroundColor(.secondary)
+    .tracking(0.5)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 8)
+```
+
+### Tool Button
+
+```swift
+HStack(spacing: 10) {
+    Image(systemName: tool.icon)
+        .font(.system(size: 13, weight: .medium))
+        .foregroundColor(isSelected ? tool.color : .secondary)
+        .frame(width: 20)
+    
+    Text(tool.rawValue)
+        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+        .foregroundColor(isSelected ? .primary : .secondary)
+}
+.padding(.horizontal, 10)
+.padding(.vertical, 8)
+.background {
+    RoundedRectangle(cornerRadius: 8)
+        .fill(isSelected ? tool.color.opacity(0.12) : (isHovered ? .primary.opacity(0.05) : .clear))
+}
+```
+
+### Hardware Status Indicator
+
+```swift
+HStack(spacing: 8) {
+    Circle()
+        .fill(hasVideoToolbox ? Color(hex: "22C55E") : Color(hex: "F97316"))
+        .frame(width: 8, height: 8)
+    
+    VStack(alignment: .leading, spacing: 1) {
+        Text(hasVideoToolbox ? "GPU Accelerated" : "Software Encoding")
+            .font(.system(size: 11, weight: .medium))
+        Text(gpuName)
+            .font(.system(size: 10))
+            .foregroundColor(.secondary)
+    }
+}
+```
+
+---
+
+## FFmpeg Integration
+
+### Architecture
+
+```
+ConversionManager (global state)
+    ├── FFmpegService (command execution)
+    ├── MediaProbeService (file analysis)
+    └── HardwareDetector (GPU capabilities)
+
+FFmpegCommandBuilder (static, builds commands from job + hardware info)
+TranscodingPipeline (FFmpegKit wrapper)
+```
+
+### Hardware Acceleration
+
+```swift
+// Detect VideoToolbox support
+let hardwareAcceleration = hardwareDetector.detectCapabilities()
+
+// Use in command building
+if hardwareAcceleration.hasVideoToolbox {
+    // Use h264_videotoolbox or hevc_videotoolbox encoders
+}
+```
+
+### Progress Streaming
+
+```swift
+for try await progress in ffmpegService.execute(command: command, duration: duration) {
+    conversionJob?.progress = progress.percentage
+    conversionJob?.currentTime = progress.currentTime
+    conversionJob?.speed = progress.speed
+}
+```
+
+---
+
+## macOS Quality-of-Life Features
+
+### Info.plist Essentials
+
+| Key | Value |
+|-----|-------|
+| `CFBundleIconFile` | AppIcon |
+| `LSApplicationCategoryType` | public.app-category.video |
+| `NSHighResolutionCapable` | true |
+| `NSHumanReadableCopyright` | Copyright © 2024 |
+| `CFBundleDocumentTypes` | Video, Audio, Image types |
+| `UTImportedTypeDeclarations` | MKV, WebM custom types |
+
+### Supported File Types
+
+```swift
+// Video
+.movie, .mpeg4Movie, .quickTimeMovie, .avi, .mpeg
+
+// Audio
+.wav, .mp3, .aiff
+
+// Image
+.png, .jpeg, .gif, .heic, .webP, .tiff, .bmp
+```
+
+### Drag and Drop
+
+```swift
+.onDrop(of: [.fileURL], isTargeted: $dragOver) { providers in
+    guard let provider = providers.first else { return false }
+    
+    provider.loadItem(forTypeIdentifier: "public.file-url") { item, _ in
+        guard let data = item as? Data,
+              let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+        Task { @MainActor in await manager.loadFile(from: url) }
+    }
+    return true
+}
+```
+
+---
+
+## Animation Patterns
+
+### Spring Animations
+
+```swift
+// Tool/format selection
+withAnimation(.spring(response: 0.25)) { ... }
+
+// Content transitions
+withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { ... }
+```
+
+### Hover Effects
+
+```swift
+.scaleEffect(isHovered ? 1.03 : 1.0)
+.animation(.spring(response: 0.2), value: isHovered)
+.onHover { isHovered = $0 }
+```
+
+### Transitions
+
+```swift
+// Content appearance
+.transition(.opacity.combined(with: .scale(scale: 0.98)))
+
+// Expandable sections
+.transition(.opacity.combined(with: .move(edge: .top)))
+```
+
+---
+
+## File Structure
+
+```
+Convertify/
+├── ConvertifyApp.swift          # App entry, window config
+├── Models/
+│   ├── ConversionJob.swift      # Conversion state
+│   ├── MediaFile.swift          # Probed file info
+│   ├── OutputFormat.swift       # Format definitions
+│   └── QualityPreset.swift      # Quality levels
+├── Services/
+│   ├── FFmpegService.swift      # Command execution
+│   ├── HardwareDetector.swift   # GPU detection
+│   └── MediaProbeService.swift  # File analysis
+├── FFmpegKit/
+│   ├── FFmpegTypes.swift        # Type definitions
+│   ├── FilterGraph.swift        # Filter building
+│   ├── HardwareAcceleration.swift
+│   └── TranscodingPipeline.swift
+├── Utilities/
+│   └── FFmpegCommandBuilder.swift
+├── Views/
+│   ├── ContentView.swift        # Main layout + components
+│   ├── ConversionPanelView.swift
+│   ├── DropZoneView.swift
+│   ├── AdvancedOptionsView.swift
+│   └── ProgressOverlayView.swift
+└── Assets.xcassets/
+```
+
+---
+
+## Testing Checklist
+
+Before shipping, verify:
+
+- [ ] All conversion tools work (Convert, Compress, Extract Audio, Trim, GIF, Resize)
+- [ ] Drag-and-drop file import works
+- [ ] Format detection is accurate
+- [ ] Hardware acceleration detected and used
+- [ ] Progress bar updates smoothly
+- [ ] Cancel button stops conversion
+- [ ] Output file opens in Finder after completion
+- [ ] Quality presets produce expected results
+- [ ] Trim slider works with correct timestamps
+- [ ] GIF generation respects FPS/width settings
+- [ ] Crop preview shows correct dimensions
+- [ ] Advanced options apply correctly
+- [ ] App respects dark/light mode
+- [ ] Window resizing works properly
+
+---
+
+## Performance Considerations
+
+1. **Async Media Probing** — File analysis runs off main thread
+2. **Streaming Progress** — FFmpeg output parsed incrementally
+3. **Hardware Encoding** — VideoToolbox used when available
+4. **Lazy Image Loading** — Crop preview loads async
+5. **Efficient Thumbnails** — Video frames extracted at reasonable resolution (1280px max)
