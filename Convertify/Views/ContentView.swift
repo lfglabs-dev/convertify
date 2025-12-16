@@ -361,7 +361,8 @@ struct ContentView: View {
             TrimSection(duration: file.duration)
             QualityPickerSection()
             
-        case .toGif:
+        case .gif:
+            // GIF options: frame rate, width, trim range
             GifOptionsSection(duration: file.duration)
             
         case .resize:
@@ -424,9 +425,18 @@ struct ContentView: View {
         guard let provider = providers.first else { return false }
         
         if provider.hasItemConformingToTypeIdentifier("public.file-url") {
-            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, error in
+                if let error = error {
+                    print("[Convertify] Drop error: \(error)")
+                    return
+                }
                 guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                    print("[Convertify] Could not get URL from dropped item")
+                    return
+                }
+                
+                print("[Convertify] Dropped file: \(url.path)")
                 Task { @MainActor in await manager.loadFile(from: url) }
             }
             return true
@@ -442,7 +452,7 @@ enum ConversionTool: String, CaseIterable, Identifiable {
     case compress = "Compress"
     case extractAudio = "Extract Audio"
     case trim = "Trim & Cut"
-    case toGif = "Make GIF"
+    case gif = "Make GIF"
     case resize = "Resize & Crop"
     
     var id: String { rawValue }
@@ -453,7 +463,7 @@ enum ConversionTool: String, CaseIterable, Identifiable {
         case .compress: return "archivebox"
         case .extractAudio: return "waveform"
         case .trim: return "scissors"
-        case .toGif: return "photo.stack"
+        case .gif: return "photo.on.rectangle.angled"
         case .resize: return "crop"
         }
     }
@@ -464,7 +474,7 @@ enum ConversionTool: String, CaseIterable, Identifiable {
         case .compress: return Color(hex: "F59E0B")
         case .extractAudio: return Color(hex: "EC4899")
         case .trim: return Color(hex: "10B981")
-        case .toGif: return Color(hex: "8B5CF6")
+        case .gif: return Color(hex: "8B5CF6")
         case .resize: return Color(hex: "3B82F6")
         }
     }
@@ -475,7 +485,7 @@ enum ConversionTool: String, CaseIterable, Identifiable {
         case .compress: return "Drop a video to compress"
         case .extractAudio: return "Drop a video to extract audio"
         case .trim: return "Drop a video to trim"
-        case .toGif: return "Drop a video to make GIF"
+        case .gif: return "Drop a video to make a GIF"
         case .resize: return "Drop a file to resize or crop"
         }
     }
@@ -486,7 +496,7 @@ enum ConversionTool: String, CaseIterable, Identifiable {
         case .compress: return "Reduce file size while keeping quality"
         case .extractAudio: return "Get audio track from any video"
         case .trim: return "Cut out a specific part"
-        case .toGif: return "Create animated GIF from video"
+        case .gif: return "Create animated GIF from video"
         case .resize: return "Change dimensions or crop to aspect ratio"
         }
     }
@@ -1129,34 +1139,64 @@ struct CompressOptionsSection: View {
 struct AudioExtractionSection: View {
     @EnvironmentObject var manager: ConversionManager
     
-    private let audioFormats: [OutputFormat] = [.mp3, .aac, .wav, .flac, .m4a]
+    // Supported audio outputs for our bundled FFmpeg build
+    private let audioFormats: [OutputFormat] = [.m4a, .aac, .flac]
+    
+    private var hasAudio: Bool {
+        manager.inputFile?.audioCodec != nil
+    }
     
     var body: some View {
-        OptionCard(title: "Audio Format") {
-            VStack(alignment: .leading, spacing: 14) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 70, maximum: 90), spacing: 8)], spacing: 8) {
-                    ForEach(audioFormats) { format in
-                        FormatCell(format: format, isSelected: manager.outputFormat == format) {
-                            withAnimation(.spring(response: 0.2)) {
-                                manager.outputFormat = format
+        VStack(spacing: 16) {
+            // Warning if no audio
+            if !hasAudio {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 20))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No Audio Track Found")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+                        Text("This video doesn't contain an audio track. Audio extraction is not possible.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(10)
+            }
+            
+            OptionCard(title: "Audio Format") {
+                VStack(alignment: .leading, spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 70, maximum: 90), spacing: 8)], spacing: 8) {
+                        ForEach(audioFormats) { format in
+                            FormatCell(format: format, isSelected: manager.outputFormat == format) {
+                                withAnimation(.spring(response: 0.2)) {
+                                    manager.outputFormat = format
+                                }
                             }
                         }
                     }
+                    .opacity(hasAudio ? 1 : 0.5)
+                    .allowsHitTesting(hasAudio)
+                    
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 10))
+                        Text(manager.outputFormat.description)
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.top, 2)
                 }
-                
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 10))
-                    Text(manager.outputFormat.description)
-                        .font(.system(size: 11))
-                }
-                .foregroundColor(.secondary)
-                .padding(.top, 2)
             }
         }
         .onAppear {
             if !audioFormats.contains(manager.outputFormat) {
-                manager.outputFormat = .mp3
+                manager.outputFormat = .m4a
             }
         }
     }
@@ -1170,15 +1210,19 @@ struct TrimSection: View {
     
     @State private var startPercent: Double = 0
     @State private var endPercent: Double = 100
-    @State private var dragStartStart: Double = 0
-    @State private var dragStartEnd: Double = 100
+    @State private var dragStartStart: Double = -1  // -1 means not dragging
+    @State private var dragStartEnd: Double = -1    // -1 means not dragging
     
     private var startSeconds: TimeInterval {
-        startPercent / 100 * duration
+        startPercent / 100 * max(0.001, duration)  // Avoid 0 duration
     }
     
     private var endSeconds: TimeInterval {
-        endPercent / 100 * duration
+        endPercent / 100 * max(0.001, duration)  // Avoid 0 duration
+    }
+    
+    private var hasDuration: Bool {
+        duration > 0.01
     }
     
     var body: some View {
@@ -1216,59 +1260,94 @@ struct TrimSection: View {
                     }
                 }
                 
-                // Interactive dual slider
+                // Interactive dual slider - use HStack approach for proper gesture detection
                 GeometryReader { geo in
+                    let trackHeight: CGFloat = 6
+                    let handleSize: CGFloat = 24
+                    let trackWidth = geo.size.width
+                    
                     ZStack(alignment: .leading) {
-                        // Track background
+                        // Track background (centered vertically)
                         RoundedRectangle(cornerRadius: 3)
                             .fill(.primary.opacity(0.1))
-                            .frame(height: 6)
+                            .frame(height: trackHeight)
+                            .frame(maxHeight: .infinity)
                         
-                        // Selected range
+                        // Selected range (centered vertically)
                         RoundedRectangle(cornerRadius: 3)
                             .fill(Color(hex: "10B981"))
-                            .frame(width: max(0, (endPercent - startPercent) / 100 * geo.size.width), height: 6)
-                            .offset(x: startPercent / 100 * geo.size.width)
+                            .frame(width: max(0, (endPercent - startPercent) / 100 * trackWidth), height: trackHeight)
+                            .frame(maxHeight: .infinity)
+                            .offset(x: startPercent / 100 * trackWidth)
                         
-                        // Start handle
+                        // Start handle - positioned via offset for proper gesture detection
+                        // Use highPriorityGesture to take precedence over window drag (isMovableByWindowBackground)
                         Circle()
                             .fill(Color.white)
-                            .frame(width: 18, height: 18)
-                            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
-                            .position(x: startPercent / 100 * geo.size.width, y: 12)
-                            .gesture(
-                                DragGesture(minimumDistance: 1)
+                            .frame(width: handleSize, height: handleSize)
+                            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                            .contentShape(Circle().inset(by: -10))  // Larger hit area
+                            .offset(x: startPercent / 100 * trackWidth - handleSize / 2)
+                            .highPriorityGesture(
+                                DragGesture(minimumDistance: 1, coordinateSpace: .local)
                                     .onChanged { value in
-                                        let newPercent = (value.location.x / geo.size.width) * 100
+                                        if dragStartStart == -1 {
+                                            dragStartStart = startPercent
+                                        }
+                                        let delta = (value.translation.width / max(1, trackWidth)) * 100
+                                        let newPercent = dragStartStart + delta
                                         startPercent = min(max(0, newPercent), endPercent - 5)
                                         updateManager()
                                     }
+                                    .onEnded { _ in
+                                        dragStartStart = -1
+                                    }
                             )
                         
-                        // End handle
+                        // End handle - positioned via offset for proper gesture detection  
+                        // Use highPriorityGesture to take precedence over window drag (isMovableByWindowBackground)
                         Circle()
                             .fill(Color.white)
-                            .frame(width: 18, height: 18)
-                            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
-                            .position(x: endPercent / 100 * geo.size.width, y: 12)
-                            .gesture(
-                                DragGesture(minimumDistance: 1)
+                            .frame(width: handleSize, height: handleSize)
+                            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                            .contentShape(Circle().inset(by: -10))  // Larger hit area
+                            .offset(x: endPercent / 100 * trackWidth - handleSize / 2)
+                            .highPriorityGesture(
+                                DragGesture(minimumDistance: 1, coordinateSpace: .local)
                                     .onChanged { value in
-                                        let newPercent = (value.location.x / geo.size.width) * 100
+                                        if dragStartEnd == -1 {
+                                            dragStartEnd = endPercent
+                                        }
+                                        let delta = (value.translation.width / max(1, trackWidth)) * 100
+                                        let newPercent = dragStartEnd + delta
                                         endPercent = max(min(100, newPercent), startPercent + 5)
                                         updateManager()
+                                    }
+                                    .onEnded { _ in
+                                        dragStartEnd = -1
                                     }
                             )
                     }
                 }
-                .frame(height: 24)
+                .frame(height: 32)
                 
-                Text("Drag handles to select the portion to keep")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                if hasDuration {
+                    Text("Drag handles to select the portion to keep")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                } else {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundColor(.orange)
+                        Text("Video duration unavailable – trim may not work correctly")
+                            .font(.system(size: 11))
+                            .foregroundColor(.orange)
+                    }
+                }
             }
         }
         .onAppear {
+            ConvertifyDiagnostics.log("TrimSection onAppear: duration=\(duration)s hasDuration=\(hasDuration)")
             // Initialize from manager if already set
             if let start = manager.advancedOptions.startTime, duration > 0 {
                 startPercent = (start / duration) * 100
@@ -1278,6 +1357,7 @@ struct TrimSection: View {
             } else {
                 endPercent = 100
             }
+            // dragStartStart/dragStartEnd stay at -1 (not dragging)
         }
     }
     
@@ -1313,8 +1393,51 @@ struct GifOptionsSection: View {
         Int(effectiveDuration * fps)
     }
     
+    private var systemFFmpegAvailable: Bool {
+        SystemFFmpegGifTranscoder.isAvailable()
+    }
+    
     var body: some View {
         VStack(spacing: 20) {
+            // Status banner based on system ffmpeg availability
+            if systemFFmpegAvailable {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.system(size: 20))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("GIF Export Ready")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+                        Text("Using system ffmpeg for high-quality GIF generation with palette optimization.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(Color.green.opacity(0.1))
+                .cornerRadius(10)
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 20))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("FFmpeg Required for GIF")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+                        Text("Install ffmpeg for GIF support:\nbrew install ffmpeg")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(10)
+            }
+            
             OptionCard(title: "GIF Settings") {
                 VStack(spacing: 16) {
                     // FPS slider
@@ -2446,7 +2569,7 @@ struct ConvertAction: View {
         case .compress: return "Compress"
         case .extractAudio: return "Extract Audio"
         case .trim: return "Trim Video"
-        case .toGif: return "Create GIF"
+        case .gif: return "Create GIF"
         case .resize: return "Apply Changes"
         }
     }
@@ -2457,7 +2580,7 @@ struct ConvertAction: View {
         case .compress: return "archivebox"
         case .extractAudio: return "waveform"
         case .trim: return "scissors"
-        case .toGif: return "photo.stack"
+        case .gif: return "photo.on.rectangle.angled"
         case .resize: return "crop"
         }
     }

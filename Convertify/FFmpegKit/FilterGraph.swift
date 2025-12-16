@@ -97,9 +97,188 @@ final class FilterGraphBuilder {
     }
 }
 
+// MARK: - System FFmpeg GIF Transcoder
+
+/// Uses system-installed ffmpeg (via Homebrew) for GIF generation
+/// Fallback when bundled FFmpegKit doesn't have GIF muxer
+final class SystemFFmpegGifTranscoder {
+    
+    private let inputPath: String
+    private let outputPath: String
+    private let fps: Int
+    private let width: Int
+    private let startTime: Double?
+    private let endTime: Double?
+    private var process: Process?
+    private var shouldStop = false
+    
+    init(inputPath: String,
+         outputPath: String,
+         fps: Int = 15,
+         width: Int = 480,
+         startTime: Double? = nil,
+         endTime: Double? = nil) {
+        self.inputPath = inputPath
+        self.outputPath = outputPath
+        self.fps = fps
+        self.width = width
+        self.startTime = startTime
+        self.endTime = endTime
+    }
+    
+    /// Check if system ffmpeg is available with GIF support
+    static func isAvailable() -> Bool {
+        let paths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
+        for path in paths {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                // Verify GIF support
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: path)
+                proc.arguments = ["-formats"]
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = FileHandle.nullDevice
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    if let output = String(data: data, encoding: .utf8), output.contains("gif") {
+                        return true
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+        return false
+    }
+    
+    /// Get path to system ffmpeg
+    static func ffmpegPath() -> String? {
+        let paths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
+        for path in paths {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+    
+    func cancel() {
+        shouldStop = true
+        process?.terminate()
+    }
+    
+    func transcode(progress: @escaping (TranscodingProgress) -> Void) throws {
+        guard let ffmpegPath = Self.ffmpegPath() else {
+            throw FFmpegKitError.codecNotFound("System ffmpeg not found. Install via: brew install ffmpeg")
+        }
+        
+        var args: [String] = ["-y"]
+        
+        // Seek to start time (before input for fast seeking)
+        if let start = startTime, start > 0 {
+            args += ["-ss", String(format: "%.3f", start)]
+        }
+        
+        args += ["-i", inputPath]
+        
+        // Duration (after input)
+        if let start = startTime, let end = endTime, end > start {
+            args += ["-t", String(format: "%.3f", end - start)]
+        } else if let end = endTime {
+            args += ["-t", String(format: "%.3f", end)]
+        }
+        
+        // High-quality GIF filter with palette generation
+        let filterComplex = "[0:v] fps=\(fps),scale=\(width):-1:flags=lanczos,split [a][b];[a] palettegen=stats_mode=diff [p];[b][p] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+        args += ["-filter_complex", filterComplex]
+        
+        args += ["-loop", "0"]  // Infinite loop
+        args += ["-an"]  // No audio
+        args += [outputPath]
+        
+        print("[SystemFFmpegGifTranscoder] Running: ffmpeg \(args.joined(separator: " "))")
+        
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: ffmpegPath)
+        proc.arguments = args
+        
+        // Capture stderr for progress
+        let stderrPipe = Pipe()
+        proc.standardError = stderrPipe
+        proc.standardOutput = FileHandle.nullDevice
+        
+        self.process = proc
+        
+        // Start process
+        try proc.run()
+        
+        // Read progress from stderr
+        let stderrHandle = stderrPipe.fileHandleForReading
+        var totalDuration: Double = 0
+        
+        // Try to get duration
+        if let end = endTime, let start = startTime {
+            totalDuration = end - start
+        } else if let end = endTime {
+            totalDuration = end
+        }
+        
+        // Process output asynchronously
+        DispatchQueue.global(qos: .utility).async {
+            while proc.isRunning && !self.shouldStop {
+                if let data = try? stderrHandle.availableData, !data.isEmpty,
+                   let line = String(data: data, encoding: .utf8) {
+                    // Parse "time=00:00:01.23" from ffmpeg output
+                    if let range = line.range(of: "time=") {
+                        let timeStr = String(line[range.upperBound...].prefix(11))
+                        if let currentTime = self.parseTime(timeStr) {
+                            var prog = TranscodingProgress()
+                            prog.currentTime = currentTime
+                            prog.totalDuration = totalDuration
+                            prog.percentage = totalDuration > 0 ? currentTime / totalDuration : 0
+                            progress(prog)
+                        }
+                    }
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        
+        proc.waitUntilExit()
+        
+        if shouldStop {
+            throw FFmpegKitError.cancelled
+        }
+        
+        if proc.terminationStatus != 0 {
+            throw FFmpegKitError.encodingFailed(proc.terminationStatus)
+        }
+        
+        // Final progress
+        var finalProg = TranscodingProgress()
+        finalProg.percentage = 1.0
+        progress(finalProg)
+    }
+    
+    private func parseTime(_ timeStr: String) -> Double? {
+        // Parse HH:MM:SS.ms format
+        let parts = timeStr.split(separator: ":")
+        guard parts.count >= 3 else { return nil }
+        
+        let hours = Double(parts[0]) ?? 0
+        let minutes = Double(parts[1]) ?? 0
+        let seconds = Double(parts[2].prefix(while: { $0.isNumber || $0 == "." })) ?? 0
+        
+        return hours * 3600 + minutes * 60 + seconds
+    }
+}
+
 // MARK: - GIF Transcoder
 
-/// Specialized transcoder for high-quality GIF generation
+/// Specialized transcoder for high-quality GIF generation (uses bundled FFmpegKit)
+/// Note: May fail if bundled FFmpeg doesn't include GIF muxer - use SystemFFmpegGifTranscoder as fallback
 final class GifTranscoder {
     
     private var inputFormatContext: UnsafeMutablePointer<AVFormatContext>?
@@ -218,70 +397,110 @@ final class GifTranscoder {
         
         let stream = inCtx.pointee.streams[Int(videoStreamIndex)]!
         
-        guard let graph = avfilter_graph_alloc() else {
-            throw FFmpegKitError.allocationFailed("filter graph")
-        }
-        filterGraph = graph
-        
-        // Buffer source
-        guard let bufferSrc = avfilter_get_by_name("buffer") else {
-            throw FFmpegKitError.filterGraphFailed("buffer not found")
-        }
-        
         let timeBase = stream.pointee.time_base
-        let pixFmtName = String(cString: av_get_pix_fmt_name(decCtx.pointee.pix_fmt))
-        let args = "video_size=\(decCtx.pointee.width)x\(decCtx.pointee.height):pix_fmt=\(pixFmtName):time_base=\(timeBase.num)/\(timeBase.den):pixel_aspect=1/1"
-        
-        var ret = avfilter_graph_create_filter(&bufferSrcContext, bufferSrc, "in", args, nil, graph)
-        guard ret >= 0 else {
-            throw FFmpegKitError.filterGraphFailed("buffer source creation failed")
+        let pixFmtName: String
+        if let pixFmtNamePtr = av_get_pix_fmt_name(decCtx.pointee.pix_fmt) {
+            pixFmtName = String(cString: pixFmtNamePtr)
+        } else {
+            // Some decoders report AV_PIX_FMT_NONE at this stage; use a sensible default
+            pixFmtName = "yuv420p"
         }
+        let srcArgs = "video_size=\(decCtx.pointee.width)x\(decCtx.pointee.height):pix_fmt=\(pixFmtName):time_base=\(timeBase.num)/\(max(1, timeBase.den)):pixel_aspect=1/1"
         
-        // Buffer sink
-        guard let bufferSink = avfilter_get_by_name("buffersink") else {
-            throw FFmpegKitError.filterGraphFailed("buffersink not found")
-        }
-        
-        ret = avfilter_graph_create_filter(&bufferSinkContext, bufferSink, "out", nil, nil, graph)
-        guard ret >= 0 else {
-            throw FFmpegKitError.filterGraphFailed("buffer sink creation failed")
-        }
-        
-        // Build filter string
-        let filterString = FilterGraphBuilder.buildGifFilterString(
+        // Build filter strings - complex (palette-based) and simple (direct RGB)
+        let complexFilterString = FilterGraphBuilder.buildGifFilterString(
             fps: fps,
             width: width,
             crop: crop
         )
         
-        // Parse filter graph
-        var outputs = avfilter_inout_alloc()
-        var inputs = avfilter_inout_alloc()
+        // Simple fallback: just fps, scale, and format to rgb24 (GIF encoder's format)
+        var simpleFilters: [String] = []
+        if let c = crop {
+            simpleFilters.append("crop=\(c.width):\(c.height):\(c.x):\(c.y)")
+        }
+        simpleFilters.append("fps=\(fps)")
+        simpleFilters.append("scale=\(width):-1:flags=lanczos")
+        simpleFilters.append("format=rgb24")  // GIF encoder requires RGB24
+        let simpleFilterString = simpleFilters.joined(separator: ",")
         
-        defer {
-            avfilter_inout_free(&outputs)
-            avfilter_inout_free(&inputs)
+        // Try complex filter first, fall back to simple if it fails
+        let filterStrings = [complexFilterString, simpleFilterString]
+        var lastError: Error?
+        
+        for filterString in filterStrings {
+            // Clean up previous attempt if any
+            if let graph = filterGraph {
+                avfilter_graph_free(&filterGraph)
+            }
+            bufferSrcContext = nil
+            bufferSinkContext = nil
+            
+            guard let graph = avfilter_graph_alloc() else {
+                throw FFmpegKitError.allocationFailed("filter graph")
+            }
+            filterGraph = graph
+            
+            // Buffer source
+            guard let bufferSrc = avfilter_get_by_name("buffer") else {
+                throw FFmpegKitError.filterGraphFailed("buffer not found")
+            }
+            
+            var ret = avfilter_graph_create_filter(&bufferSrcContext, bufferSrc, "in", srcArgs, nil, graph)
+            if ret < 0 {
+                lastError = FFmpegKitError.filterGraphFailed("buffer source creation failed")
+                continue
+            }
+            
+            // Buffer sink
+            guard let bufferSink = avfilter_get_by_name("buffersink") else {
+                throw FFmpegKitError.filterGraphFailed("buffersink not found")
+            }
+            
+            ret = avfilter_graph_create_filter(&bufferSinkContext, bufferSink, "out", nil, nil, graph)
+            if ret < 0 {
+                lastError = FFmpegKitError.filterGraphFailed("buffer sink creation failed")
+                continue
+            }
+            
+            // Parse filter graph
+            var outputs = avfilter_inout_alloc()
+            var inputs = avfilter_inout_alloc()
+            
+            defer {
+                avfilter_inout_free(&outputs)
+                avfilter_inout_free(&inputs)
+            }
+            
+            outputs?.pointee.name = av_strdup("in")
+            outputs?.pointee.filter_ctx = bufferSrcContext
+            outputs?.pointee.pad_idx = 0
+            outputs?.pointee.next = nil
+            
+            inputs?.pointee.name = av_strdup("out")
+            inputs?.pointee.filter_ctx = bufferSinkContext
+            inputs?.pointee.pad_idx = 0
+            inputs?.pointee.next = nil
+            
+            ret = avfilter_graph_parse_ptr(graph, filterString, &inputs, &outputs, nil)
+            if ret < 0 {
+                lastError = FFmpegKitError.filterGraphFailed("parse failed: \(filterString)")
+                continue  // Try next filter string
+            }
+            
+            ret = avfilter_graph_config(graph, nil)
+            if ret < 0 {
+                lastError = FFmpegKitError.filterGraphFailed("config failed for: \(filterString)")
+                continue
+            }
+            
+            // Success!
+            print("[GifTranscoder] Using filter: \(filterString)")
+            return
         }
         
-        outputs?.pointee.name = av_strdup("in")
-        outputs?.pointee.filter_ctx = bufferSrcContext
-        outputs?.pointee.pad_idx = 0
-        outputs?.pointee.next = nil
-        
-        inputs?.pointee.name = av_strdup("out")
-        inputs?.pointee.filter_ctx = bufferSinkContext
-        inputs?.pointee.pad_idx = 0
-        inputs?.pointee.next = nil
-        
-        ret = avfilter_graph_parse_ptr(graph, filterString, &inputs, &outputs, nil)
-        guard ret >= 0 else {
-            throw FFmpegKitError.filterGraphFailed("parse failed: \(filterString)")
-        }
-        
-        ret = avfilter_graph_config(graph, nil)
-        guard ret >= 0 else {
-            throw FFmpegKitError.filterGraphFailed("config failed")
-        }
+        // All filter strings failed
+        throw lastError ?? FFmpegKitError.filterGraphFailed("all filter configurations failed")
     }
     
     private func openOutput() throws {
@@ -368,7 +587,27 @@ final class GifTranscoder {
             av_packet_free(&outPacket)
         }
         
-        let duration = Double(inCtx.pointee.duration) / Double(AV_TIME_BASE)
+        // Duration for progress (container duration can be missing)
+        let duration: Double = {
+            let raw = inCtx.pointee.duration
+            if raw != AV_NOPTS_VALUE_SWIFT, raw > 0 {
+                return Double(raw) / Double(AV_TIME_BASE)
+            }
+            
+            var maxStreamDuration: Double = 0
+            for i in 0..<Int(inCtx.pointee.nb_streams) {
+                guard let stream = inCtx.pointee.streams[i] else { continue }
+                let d = stream.pointee.duration
+                if d != AV_NOPTS_VALUE_SWIFT, d > 0 {
+                    let tb = stream.pointee.time_base
+                    if tb.den != 0 {
+                        let seconds = Double(d) * Double(tb.num) / Double(tb.den)
+                        maxStreamDuration = max(maxStreamDuration, seconds)
+                    }
+                }
+            }
+            return max(0, maxStreamDuration)
+        }()
         var progressInfo = TranscodingProgress()
         progressInfo.totalDuration = duration
         
@@ -434,7 +673,8 @@ final class GifTranscoder {
             // Progress update
             if frameCount % 10 == 0 {
                 let stream = inCtx.pointee.streams[Int(videoStreamIndex)]!
-                let currentTime = timestampToSeconds(packet!.pointee.pts, timeBase: stream.pointee.time_base)
+                let pts = packet!.pointee.pts
+                let currentTime = pts != AV_NOPTS_VALUE_SWIFT ? timestampToSeconds(pts, timeBase: stream.pointee.time_base) : 0
                 progressInfo.currentTime = currentTime
                 progressInfo.percentage = duration > 0 ? currentTime / duration : 0
                 progressInfo.frame = frameCount

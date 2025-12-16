@@ -34,6 +34,7 @@ enum FFmpegKitError: LocalizedError {
     case endOfFile
     case cancelled
     case hardwareAccelerationUnavailable
+    case noStreamsToMux
     case unknown(Int32)
     
     var errorDescription: String? {
@@ -72,6 +73,8 @@ enum FFmpegKitError: LocalizedError {
             return "Operation was cancelled"
         case .hardwareAccelerationUnavailable:
             return "Hardware acceleration is not available"
+        case .noStreamsToMux:
+            return "No streams available to write - input may be missing required audio/video"
         case .unknown(let code):
             return "Unknown error: \(ffmpegErrorString(code))"
         }

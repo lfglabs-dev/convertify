@@ -122,6 +122,16 @@ struct FFmpegCommand {
             }
         }
         
+        ConvertifyDiagnostics.log(
+            "Parsed TranscodingConfig: out=\(format) stripVideo=\(config.stripVideo) stripAudio=\(config.stripAudio) " +
+            "vCodec=\(config.videoCodec ?? "nil") aCodec=\(config.audioCodec ?? "nil") " +
+            "vBitrate=\(config.videoBitrate.map(String.init) ?? "nil") aBitrate=\(config.audioBitrate.map(String.init) ?? "nil") " +
+            "crf=\(config.videoCRF.map(String.init) ?? "nil") " +
+            "start=\(config.startTime.map { String(format: "%.3f", $0) } ?? "nil") " +
+            "end=\(config.endTime.map { String(format: "%.3f", $0) } ?? "nil") " +
+            "vf=\(config.videoFilters)"
+        )
+        
         return config
     }
     
@@ -175,14 +185,22 @@ class FFmpegService: ObservableObject {
     func execute(command: FFmpegCommand, duration: TimeInterval) -> AsyncThrowingStream<ConversionProgress, Error> {
         isCancelled = false
         
+        print("[FFmpegService] Starting execution")
+        print("[FFmpegService] Input: \(command.inputPath)")
+        print("[FFmpegService] Output: \(command.outputPath)")
+        print("[FFmpegService] Duration: \(duration)")
+        
         return AsyncThrowingStream { continuation in
             Task {
                 do {
+                    print("[FFmpegService] Task started, calling runTranscoding")
                     try await self.runTranscoding(command: command, duration: duration) { progress in
                         continuation.yield(progress)
                     }
+                    print("[FFmpegService] Transcoding completed successfully")
                     continuation.finish()
                 } catch {
+                    print("[FFmpegService] Transcoding error: \(error)")
                     continuation.finish(throwing: error)
                 }
             }
@@ -235,6 +253,10 @@ class FFmpegService: ObservableObject {
     ) async throws {
         let outputExt = (command.outputPath as NSString).pathExtension.lowercased()
         var config = command.toTranscodingConfig(format: outputExt)
+        
+        print("[FFmpegService] TranscodingConfig created:")
+        print("[FFmpegService]   config.inputPath: \(config.inputPath)")
+        print("[FFmpegService]   config.outputPath: \(config.outputPath)")
         
         // Select hardware encoder if available
         if config.videoCodec == nil || config.videoCodec == "libx264" {
@@ -295,7 +317,8 @@ class FFmpegService: ObservableObject {
                 }
             }
             if arg.contains("scale=") {
-                if let match = arg.range(of: "scale=(\\d+)", options: .regularExpression) {
+                // Avoid matching `bayer_scale=...` in the paletteuse filter
+                if let match = arg.range(of: "(?<!bayer_)scale=(\\d+)", options: .regularExpression) {
                     let widthStr = String(arg[match]).replacingOccurrences(of: "scale=", with: "")
                     width = Int(widthStr) ?? 480
                 }
@@ -330,42 +353,81 @@ class FFmpegService: ObservableObject {
             }
         }
         
-        let transcoder = GifTranscoder(
-            inputPath: command.inputPath,
-            outputPath: command.outputPath,
-            fps: fps,
-            width: width,
-            crop: crop,
-            startTime: startTime,
-            endTime: endTime
-        )
-        currentGifTranscoder = transcoder
-        
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try transcoder.transcode { transcodingProgress in
-                        let progress = ConversionProgress(
-                            currentTime: transcodingProgress.currentTime,
-                            percentage: transcodingProgress.percentage,
-                            speed: transcodingProgress.speed,
-                            frame: transcodingProgress.frame,
-                            fps: transcodingProgress.fps,
-                            bitrate: "N/A",
-                            size: 0
-                        )
-                        DispatchQueue.main.async {
-                            onProgress(progress)
+        // Prefer system ffmpeg which has full GIF support (bundled FFmpegKit lacks GIF muxer)
+        if SystemFFmpegGifTranscoder.isAvailable() {
+            print("[FFmpegService] Using system ffmpeg for GIF generation")
+            let systemTranscoder = SystemFFmpegGifTranscoder(
+                inputPath: command.inputPath,
+                outputPath: command.outputPath,
+                fps: fps,
+                width: width,
+                startTime: startTime,
+                endTime: endTime
+            )
+            
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try systemTranscoder.transcode { transcodingProgress in
+                            let progress = ConversionProgress(
+                                currentTime: transcodingProgress.currentTime,
+                                percentage: transcodingProgress.percentage,
+                                speed: transcodingProgress.speed,
+                                frame: 0,
+                                fps: 0,
+                                bitrate: "N/A",
+                                size: 0
+                            )
+                            DispatchQueue.main.async {
+                                onProgress(progress)
+                            }
                         }
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
                     }
-                    continuation.resume()
-            } catch {
-                continuation.resume(throwing: error)
                 }
             }
+        } else {
+            // Fallback to bundled transcoder (will likely fail without GIF muxer)
+            print("[FFmpegService] System ffmpeg not available, trying bundled GIF transcoder")
+            let transcoder = GifTranscoder(
+                inputPath: command.inputPath,
+                outputPath: command.outputPath,
+                fps: fps,
+                width: width,
+                crop: crop,
+                startTime: startTime,
+                endTime: endTime
+            )
+            currentGifTranscoder = transcoder
+            
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try transcoder.transcode { transcodingProgress in
+                            let progress = ConversionProgress(
+                                currentTime: transcodingProgress.currentTime,
+                                percentage: transcodingProgress.percentage,
+                                speed: transcodingProgress.speed,
+                                frame: transcodingProgress.frame,
+                                fps: transcodingProgress.fps,
+                                bitrate: "N/A",
+                                size: 0
+                            )
+                            DispatchQueue.main.async {
+                                onProgress(progress)
+                            }
+                        }
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+            
+            currentGifTranscoder = nil
         }
-        
-        currentGifTranscoder = nil
     }
     
     private func runImageTranscoding(

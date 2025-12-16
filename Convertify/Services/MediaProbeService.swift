@@ -13,12 +13,12 @@ import Libavutil
 final class MediaProbeService: Sendable {
     
     /// Probe a media file and return its metadata
-    func probe(url: URL) async throws -> MediaFile {
+    func probe(url: URL, bookmarkData: Data? = nil) async throws -> MediaFile {
         try await withCheckedThrowingContinuation { continuation in
             // Run on background thread since libav operations can be slow
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let result = try self.probeSync(url: url)
+                    let result = try self.probeSync(url: url, bookmarkData: bookmarkData)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -39,7 +39,7 @@ final class MediaProbeService: Sendable {
     
     // MARK: - Private Methods
     
-    private func probeSync(url: URL) throws -> MediaFile {
+    private func probeSync(url: URL, bookmarkData: Data? = nil) throws -> MediaFile {
         var formatContext: UnsafeMutablePointer<AVFormatContext>? = nil
         let path = url.path
         
@@ -61,12 +61,43 @@ final class MediaProbeService: Sendable {
         }
         
         // Extract format-level info
+        // NOTE: `AVFormatContext.duration` can be 0/AV_NOPTS_VALUE for some MOVs.
+        // Fall back to per-stream duration to keep Trim/Compress accurate.
         let duration: TimeInterval = {
-            if ctx.pointee.duration != AV_NOPTS_VALUE_SWIFT {
+            let raw = ctx.pointee.duration
+            if raw != AV_NOPTS_VALUE_SWIFT, raw > 0 {
                 // Duration is in AV_TIME_BASE units (microseconds)
-                return Double(ctx.pointee.duration) / Double(AV_TIME_BASE)
+                return Double(raw) / Double(AV_TIME_BASE)
             }
-            return 0
+            
+            var maxStreamDuration: Double = 0
+            for i in 0..<Int(ctx.pointee.nb_streams) {
+                guard let stream = ctx.pointee.streams[i] else { continue }
+                
+                let d = stream.pointee.duration
+                if d != AV_NOPTS_VALUE_SWIFT, d > 0 {
+                    let tb = stream.pointee.time_base
+                    if tb.den != 0 {
+                        let seconds = Double(d) * Double(tb.num) / Double(tb.den)
+                        if seconds > maxStreamDuration {
+                            maxStreamDuration = seconds
+                        }
+                    }
+                    continue
+                }
+                
+                // Last resort: estimate from frame count / fps (rough)
+                let frames = stream.pointee.nb_frames
+                let fps = stream.pointee.avg_frame_rate
+                if frames > 0, fps.den != 0, fps.num != 0 {
+                    let seconds = Double(frames) * Double(fps.den) / Double(fps.num)
+                    if seconds > maxStreamDuration {
+                        maxStreamDuration = seconds
+                    }
+                }
+            }
+            
+            return max(0, maxStreamDuration)
         }()
         
         let bitrate: Int64? = ctx.pointee.bit_rate > 0 ? ctx.pointee.bit_rate : nil
@@ -149,6 +180,7 @@ final class MediaProbeService: Sendable {
             }
         }
         
+        // Use the passed bookmark data (created on main thread while fileImporter access was valid)
         return MediaFile(
             id: UUID(),
             url: url,
@@ -162,7 +194,8 @@ final class MediaProbeService: Sendable {
             frameRate: frameRate,
             bitrate: bitrate,
             audioSampleRate: audioSampleRate,
-            audioChannels: audioChannels
+            audioChannels: audioChannels,
+            bookmarkData: bookmarkData
         )
     }
 }

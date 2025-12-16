@@ -76,12 +76,38 @@ final class TranscodingPipeline {
         
         defer { cleanup() }
         
+        ConvertifyDiagnostics.log(
+            "Pipeline start: out=\(config.outputFormat) stripVideo=\(config.stripVideo) stripAudio=\(config.stripAudio) " +
+            "vCodec=\(config.videoCodec ?? "nil") aCodec=\(config.audioCodec ?? "nil") " +
+            "vBitrate=\(config.videoBitrate.map(String.init) ?? "nil") aBitrate=\(config.audioBitrate.map(String.init) ?? "nil") " +
+            "start=\(config.startTime.map { String(format: "%.3f", $0) } ?? "nil") " +
+            "end=\(config.endTime.map { String(format: "%.3f", $0) } ?? "nil")"
+        )
+        
+        print("[TranscodingPipeline] Opening input: \(config.inputPath)")
+        print("[TranscodingPipeline] Output will be: \(config.outputPath)")
         try openInput()
+        print("[TranscodingPipeline] Input opened successfully")
+        
+        print("[TranscodingPipeline] Opening output: \(config.outputPath)")
         try openOutput()
+        print("[TranscodingPipeline] Output opened successfully")
+        
+        print("[TranscodingPipeline] Setting up streams")
         try setupStreams()
+        print("[TranscodingPipeline] Streams setup complete")
+        
+        print("[TranscodingPipeline] Writing header")
         try writeHeader()
+        print("[TranscodingPipeline] Header written")
+        
+        print("[TranscodingPipeline] Processing frames")
         try processFrames()
+        print("[TranscodingPipeline] Frames processed")
+        
+        print("[TranscodingPipeline] Writing trailer")
         try writeTrailer()
+        print("[TranscodingPipeline] Transcoding complete!")
     }
     
     /// Cancel the transcoding operation
@@ -120,6 +146,10 @@ final class TranscodingPipeline {
                 audioStreamIndex = i
             }
         }
+        
+        ConvertifyDiagnostics.log(
+            "Input streams: nb=\(ctx.pointee.nb_streams) videoIndex=\(videoStreamIndex) audioIndex=\(audioStreamIndex) durationRaw=\(ctx.pointee.duration)"
+        )
         
         // Setup decoders
         if videoStreamIndex >= 0 {
@@ -210,13 +240,43 @@ final class TranscodingPipeline {
     
     // MARK: - Output Setup
     
+    private func muxerNameOverride(for outputFormat: String) -> String? {
+        switch outputFormat.lowercased() {
+        case "m4a":
+            // Our bundled libavformat doesn't include the `ipod` muxer.
+            // `.m4a` is an MP4 container with audio-only, so use `mp4`.
+            return "mp4"
+        case "aac":
+            // .aac files are typically ADTS
+            return "adts"
+        case "mkv":
+            return "matroska"
+        default:
+            return outputFormat.isEmpty ? nil : outputFormat.lowercased()
+        }
+    }
+    
     private func openOutput() throws {
         var ret: Int32 = 0
         
-        // Allocate output format context
+        // Allocate output format context.
+        // Prefer filename-based detection, but fall back to an explicit muxer name
+        // for formats that don't always resolve reliably (e.g. mp3/aac/m4a).
         ret = avformat_alloc_output_context2(&outputFormatContext, nil, nil, config.outputPath)
+        if (ret < 0 || outputFormatContext == nil), let muxer = muxerNameOverride(for: config.outputFormat) {
+            outputFormatContext = nil
+            ret = muxer.withCString { fmt in
+                avformat_alloc_output_context2(&outputFormatContext, nil, fmt, config.outputPath)
+            }
+        }
         guard ret >= 0, let outCtx = outputFormatContext else {
             throw FFmpegKitError.outputFormatNotFound(config.outputFormat)
+        }
+        
+        if let namePtr = outCtx.pointee.oformat.pointee.name {
+            ConvertifyDiagnostics.log("Output container: requested=\(config.outputFormat) muxer=\(String(cString: namePtr))")
+        } else {
+            ConvertifyDiagnostics.log("Output container: requested=\(config.outputFormat) muxer=<unknown>")
         }
         
         // Open output file if not a format that writes to memory
@@ -300,9 +360,32 @@ final class TranscodingPipeline {
         if let pixFmt = config.pixelFormat {
             encoderCtx.pointee.pix_fmt = pixFmt
         } else if let supportedFormats = encoder.pointee.pix_fmts {
-            encoderCtx.pointee.pix_fmt = supportedFormats.pointee
+            // Pick the first non-hardware pixel format when possible.
+            // Some encoders (notably `*_videotoolbox`) expose `AV_PIX_FMT_VIDEOTOOLBOX`
+            // early in this list, which is a hardware-only pixel format that libavfilter
+            // cannot scale/convert to without explicit hwupload/hwdownload steps.
+            //
+            // Since this pipeline currently operates on software frames, prefer a
+            // software pixel format (e.g. NV12/YUV420P) to keep filter graphs valid.
+            let none = AVPixelFormat(rawValue: -1)
+            var p = supportedFormats
+            var chosen = supportedFormats.pointee
+            while p.pointee != none {
+                let fmt = p.pointee
+                if fmt != AV_PIX_FMT_VIDEOTOOLBOX {
+                    chosen = fmt
+                    break
+                }
+                p = p.advanced(by: 1)
+            }
+            encoderCtx.pointee.pix_fmt = chosen
         } else {
             encoderCtx.pointee.pix_fmt = AV_PIX_FMT_YUV420P
+        }
+        
+        // Final safety: never ask the software filter pipeline to output hardware frames.
+        if encoderCtx.pointee.pix_fmt == AV_PIX_FMT_VIDEOTOOLBOX {
+            encoderCtx.pointee.pix_fmt = AV_PIX_FMT_NV12
         }
         
         // Time base and frame rate
@@ -310,8 +393,28 @@ final class TranscodingPipeline {
             encoderCtx.pointee.time_base = AVRational(num: 1, den: Int32(fps))
             encoderCtx.pointee.framerate = AVRational(num: Int32(fps), den: 1)
         } else {
-            encoderCtx.pointee.time_base = av_inv_q(inputStream.pointee.avg_frame_rate)
-            encoderCtx.pointee.framerate = inputStream.pointee.avg_frame_rate
+            // Some inputs have 0/0 avg_frame_rate which makes av_inv_q invalid and
+            // can cause hardware encoders (VideoToolbox) to fail opening.
+            let avg = inputStream.pointee.avg_frame_rate
+            let r = inputStream.pointee.r_frame_rate
+            let decFps = decoderCtx.pointee.framerate
+            
+            let fpsQ: AVRational
+            if avg.num > 0, avg.den > 0 {
+                fpsQ = avg
+            } else if r.num > 0, r.den > 0 {
+                fpsQ = r
+            } else if decFps.num > 0, decFps.den > 0 {
+                fpsQ = decFps
+            } else {
+                fpsQ = AVRational(num: 30, den: 1)
+            }
+            
+            encoderCtx.pointee.time_base = av_inv_q(fpsQ)
+            if encoderCtx.pointee.time_base.num == 0 || encoderCtx.pointee.time_base.den == 0 {
+                encoderCtx.pointee.time_base = AVRational(num: 1, den: 30)
+            }
+            encoderCtx.pointee.framerate = fpsQ
         }
         
         // Bitrate / quality
@@ -472,8 +575,14 @@ final class TranscodingPipeline {
         
         // Add format filter for pixel format conversion
         if decoderCtx.pointee.pix_fmt != encoderCtx.pointee.pix_fmt {
-            let fmtName = String(cString: av_get_pix_fmt_name(encoderCtx.pointee.pix_fmt))
-            filters.append("format=\(fmtName)")
+            if let fmtNamePtr = av_get_pix_fmt_name(encoderCtx.pointee.pix_fmt) {
+                let fmtName = String(cString: fmtNamePtr)
+                filters.append("format=\(fmtName)")
+            } else {
+                // Fallback to a widely supported pixel format if the encoder's pix_fmt
+                // has no name (should be rare, but avoids hard crashes).
+                filters.append("format=yuv420p")
+            }
         }
         
         // If no filters needed, don't create filter graph
@@ -485,7 +594,6 @@ final class TranscodingPipeline {
     
     private func createVideoFilterGraph(filterString: String) throws {
         guard let decoderCtx = videoDecoderContext,
-              let encoderCtx = videoEncoderContext,
               let inCtx = inputFormatContext else { return }
         
         let inputStream = inCtx.pointee.streams[Int(videoStreamIndex)]!
@@ -502,7 +610,12 @@ final class TranscodingPipeline {
         }
         
         let timeBase = inputStream.pointee.time_base
-        let pixFmtName = String(cString: av_get_pix_fmt_name(decoderCtx.pointee.pix_fmt))
+        let pixFmtName: String
+        if let pixFmtNamePtr = av_get_pix_fmt_name(decoderCtx.pointee.pix_fmt) {
+            pixFmtName = String(cString: pixFmtNamePtr)
+        } else {
+            pixFmtName = "yuv420p"
+        }
         let srcArgs = "video_size=\(decoderCtx.pointee.width)x\(decoderCtx.pointee.height):pix_fmt=\(pixFmtName):time_base=\(timeBase.num)/\(timeBase.den):pixel_aspect=\(decoderCtx.pointee.sample_aspect_ratio.num)/\(max(1, decoderCtx.pointee.sample_aspect_ratio.den))"
         
         var ret = avfilter_graph_create_filter(&videoBufferSrcContext, bufferSrc, "in", srcArgs, nil, graph)
@@ -519,15 +632,15 @@ final class TranscodingPipeline {
         guard ret >= 0 else {
             throw FFmpegKitError.filterGraphFailed("failed to create buffer sink")
         }
-        
-        // Set output pixel format
-        var pixFmts: [AVPixelFormat] = [encoderCtx.pointee.pix_fmt, AVPixelFormat(rawValue: -1)]
-        ret = av_opt_set_bin(videoBufferSinkContext, "pix_fmts",
-                            &pixFmts, Int32(MemoryLayout<AVPixelFormat>.size * pixFmts.count),
-                            AV_OPT_SEARCH_CHILDREN)
-        guard ret >= 0 else {
-            throw FFmpegKitError.filterGraphFailed("failed to set output pixel format")
-        }
+        //
+        // NOTE:
+        // We intentionally do NOT set `pix_fmts` on the buffersink here.
+        // The option is an int-list and misconfiguring it can cause crashes inside
+        // libavfilter format negotiation on some builds.
+        //
+        // Instead we rely on inserting an explicit `format=` filter when needed
+        // (see `setupVideoFilters()`), which guarantees frames fed to the encoder
+        // match `encoderCtx.pointee.pix_fmt`.
         
         // Parse and link filter graph
         var outputs = avfilter_inout_alloc()
@@ -596,6 +709,18 @@ final class TranscodingPipeline {
     
     private func writeHeader() throws {
         guard let outCtx = outputFormatContext else { return }
+        
+        // Verify we have at least one output stream
+        if outCtx.pointee.nb_streams == 0 {
+            // No streams were set up - likely means input lacks required streams
+            if config.stripVideo && audioStreamIndex < 0 {
+                throw FFmpegKitError.noAudioStream
+            } else if config.stripAudio && videoStreamIndex < 0 {
+                throw FFmpegKitError.noVideoStream
+            } else {
+                throw FFmpegKitError.noStreamsToMux
+            }
+        }
         
         var opts: OpaquePointer? = nil
         
@@ -970,7 +1095,7 @@ final class TranscodingPipeline {
         case "webm", "ogg":
             return "libopus"
         case "mp3":
-            return "libmp3lame"
+            return "mp3"
         case "wav":
             return "pcm_s16le"
         case "flac":

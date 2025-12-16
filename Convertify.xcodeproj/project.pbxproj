@@ -26,6 +26,7 @@
 		APP017 /* FilterGraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC017 /* FilterGraph.swift */; };
 		APP018 /* HardwareAcceleration.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC018 /* HardwareAcceleration.swift */; };
 		APP019 /* TranscodingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC019 /* TranscodingPipeline.swift */; };
+		APP020 /* GlassBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC020 /* GlassBackground.swift */; };
 		FWK002 /* FFmpegKit in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001 /* FFmpegKit */; };
 /* End PBXBuildFile section */
 
@@ -52,6 +53,7 @@
 		SRC017 /* FilterGraph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterGraph.swift; sourceTree = "<group>"; };
 		SRC018 /* HardwareAcceleration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareAcceleration.swift; sourceTree = "<group>"; };
 		SRC019 /* TranscodingPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscodingPipeline.swift; sourceTree = "<group>"; };
+		SRC020 /* GlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassBackground.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -122,6 +124,7 @@
 		GRP005 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				GRP008 /* Components */,
 				SRC002 /* ContentView.swift */,
 				SRC012 /* DropZoneView.swift */,
 				SRC013 /* ConversionPanelView.swift */,
@@ -129,6 +132,14 @@
 				SRC015 /* ProgressOverlayView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		GRP008 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				SRC020 /* GlassBackground.swift */,
+			);
+			path = Components;
 			sourceTree = "<group>";
 		};
 		GRP006 /* Utilities */ = {
@@ -244,6 +255,7 @@
 				APP017 /* FilterGraph.swift in Sources */,
 				APP018 /* HardwareAcceleration.swift in Sources */,
 				APP019 /* TranscodingPipeline.swift in Sources */,
+				APP020 /* GlassBackground.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -405,7 +417,6 @@
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_APP_SANDBOX = YES;
-				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
@@ -437,7 +448,6 @@
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_APP_SANDBOX = YES;
-				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
