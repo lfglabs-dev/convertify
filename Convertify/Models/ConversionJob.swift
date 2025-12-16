@@ -210,7 +210,7 @@ enum AudioCodecOption: String, CaseIterable, Identifiable {
         switch self {
         case .auto: return nil
         case .aac: return "aac"
-        case .mp3: return "libmp3lame"
+        case .mp3: return "mp3"
         case .opus: return "libopus"
         case .flac: return "flac"
         case .copy: return "copy"

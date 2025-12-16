@@ -22,6 +22,29 @@ struct MediaFile: Identifiable, Equatable {
     let audioSampleRate: Int?
     let audioChannels: Int?
     
+    /// Security-scoped bookmark for sandbox access
+    let bookmarkData: Data?
+    
+    /// Resolves the bookmark and starts security-scoped access. Returns true if access was granted.
+    /// Caller MUST call stopAccessingSecurityScopedResource() when done.
+    func startAccess() -> Bool {
+        // First try the bookmark
+        if let bookmarkData = bookmarkData {
+            var isStale = false
+            if let resolvedURL = try? URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale) {
+                if resolvedURL.startAccessingSecurityScopedResource() {
+                    return true
+                }
+            }
+        }
+        // Fall back to direct access
+        return url.startAccessingSecurityScopedResource()
+    }
+    
+    func stopAccess() {
+        url.stopAccessingSecurityScopedResource()
+    }
+    
     var formattedDuration: String {
         let hours = Int(duration) / 3600
         let minutes = (Int(duration) % 3600) / 60
@@ -125,7 +148,7 @@ enum MediaType {
 
 extension MediaFile {
     /// Creates a MediaFile with minimal information (for testing or when probe fails)
-    static func basic(url: URL) -> MediaFile {
+    static func basic(url: URL, bookmarkData: Data? = nil) -> MediaFile {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let fileSize = (attributes?[.size] as? Int64) ?? 0
         
@@ -142,7 +165,8 @@ extension MediaFile {
             frameRate: nil,
             bitrate: nil,
             audioSampleRate: nil,
-            audioChannels: nil
+            audioChannels: nil,
+            bookmarkData: bookmarkData
         )
     }
 }

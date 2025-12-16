@@ -11,6 +11,16 @@ struct FFmpegCommandBuilder {
     
     /// Build a complete FFmpeg command for a conversion job
     static func build(job: ConversionJob, hardwareAcceleration: HardwareAcceleration) -> FFmpegCommand {
+        let startStr = job.advancedOptions.startTime.map { String(format: "%.3f", $0) } ?? "nil"
+        let endStr = job.advancedOptions.endTime.map { String(format: "%.3f", $0) } ?? "nil"
+        let bitrateStr = job.advancedOptions.customVideoBitrate.map { "\($0)kbps" } ?? "auto"
+        ConvertifyDiagnostics.log(
+            "Build command: out=\(job.outputFormat.fileExtension) preset=\(job.qualityPreset.rawValue) " +
+            "trim=\(job.advancedOptions.hasTrimming ? "yes" : "no") " +
+            "start=\(startStr) end=\(endStr) videoBitrate=\(bitrateStr) " +
+            "audioCodec=\(job.advancedOptions.audioCodec.rawValue)"
+        )
+        
         var args: [String] = []
         
         let inputFile = job.inputFile

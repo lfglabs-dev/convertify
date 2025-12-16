@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum OutputFormat: String, CaseIterable, Identifiable {
     // Video formats
@@ -35,6 +36,31 @@ enum OutputFormat: String, CaseIterable, Identifiable {
     case ico = "ICO"
     
     var id: String { rawValue }
+    
+    /// UTType for NSSavePanel file type restrictions
+    var utType: UTType {
+        switch self {
+        case .mp4: return .mpeg4Movie
+        case .mov: return .quickTimeMovie
+        case .mkv: return UTType(filenameExtension: "mkv") ?? .movie
+        case .webm: return UTType(filenameExtension: "webm") ?? .movie
+        case .avi: return .avi
+        case .gif: return .gif
+        case .mp3: return .mp3
+        case .aac: return UTType(filenameExtension: "aac") ?? .audio
+        case .wav: return .wav
+        case .flac: return UTType(filenameExtension: "flac") ?? .audio
+        case .ogg: return UTType(filenameExtension: "ogg") ?? .audio
+        case .m4a: return UTType(filenameExtension: "m4a") ?? .audio
+        case .jpg: return .jpeg
+        case .png: return .png
+        case .webp: return .webP
+        case .heic: return .heic
+        case .tiff: return .tiff
+        case .bmp: return .bmp
+        case .ico: return .ico
+        }
+    }
     
     var fileExtension: String {
         switch self {
@@ -129,9 +155,9 @@ enum OutputFormat: String, CaseIterable, Identifiable {
         switch self {
         case .mp4, .mov, .m4a, .mkv: return "aac"
         case .webm, .ogg: return "libopus"
-        case .avi: return "libmp3lame"
+        case .avi: return "mp3"
         case .gif: return "none"
-        case .mp3: return "libmp3lame"
+        case .mp3: return "mp3"
         case .aac: return "aac"
         case .wav: return "pcm_s16le"
         case .flac: return "flac"
@@ -158,12 +184,16 @@ enum OutputFormat: String, CaseIterable, Identifiable {
     }
     
     // Group formats for picker
+    // Note: GIF is excluded because the bundled FFmpegKit doesn't include the GIF muxer.
+    // WebM is also excluded as libvpx may not be available.
     static var videoFormats: [OutputFormat] {
-        [.mp4, .mov, .mkv, .webm, .avi, .gif]
+        [.mp4, .mov, .mkv, .avi]
     }
     
     static var audioFormats: [OutputFormat] {
-        [.mp3, .aac, .wav, .flac, .ogg, .m4a]
+        // Keep this list in sync with what the bundled libavformat can actually mux.
+        // (mp3/wav/ogg muxers are not present in our App Store–compatible build.)
+        [.m4a, .aac, .flac]
     }
     
     static var imageFormats: [OutputFormat] {
