@@ -117,6 +117,32 @@ struct ContentView: View {
                 Task { await manager.loadFile(from: url) }
             }
         }
+        .onAppear {
+            // Register callback for files opened from Finder
+            AppDelegate.onOpenURLs = { [self] urls in
+                guard let url = urls.first else { return }
+                Task { @MainActor in
+                    await manager.loadFile(from: url)
+                    // Select best tool based on file type
+                    if let file = manager.inputFile {
+                        let bestTool = ConversionTool.bestTool(for: file.mediaType)
+                        // Only switch if current tool is not compatible
+                        if !selectedTool.isCompatible(with: file.mediaType) {
+                            withAnimation(.spring(response: 0.25)) {
+                                selectedTool = bestTool
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Process any pending URLs from before UI was ready
+            if !AppDelegate.pendingURLs.isEmpty {
+                let urls = AppDelegate.pendingURLs
+                AppDelegate.pendingURLs.removeAll()
+                AppDelegate.onOpenURLs?(urls)
+            }
+        }
     }
     
     // MARK: - Sidebar
@@ -164,8 +190,15 @@ struct ContentView: View {
                         guard selectedTool != tool else { return }
                         withAnimation(.spring(response: 0.25)) {
                             selectedTool = tool
-                            if manager.inputFile != nil {
-                                manager.reset()
+                            // Keep the file if it's compatible with the new tool
+                            if let file = manager.inputFile {
+                                if tool.isCompatible(with: file.mediaType) {
+                                    // Reset only tool-specific options, keep the file
+                                    manager.resetToolOptions()
+                                } else {
+                                    // File not compatible with new tool, reset everything
+                                    manager.reset()
+                                }
                             }
                         }
                     }
@@ -366,20 +399,20 @@ struct ContentView: View {
             GifOptionsSection(duration: file.duration)
             
         case .resize:
-            // Order: Crop → Format → Size
+            // Order: Crop → Size → Format
             Group {
                 // 1. Crop preview first
                 CropPreviewSection(originalResolution: file.resolution, imageURL: file.url)
                 
-                // 2. Then output format
-            if file.isImage {
-                OutputSection(detectedType: .image)
-            } else {
-                VideoOutputFormatSection()
-            }
-                
-                // 3. Finally output size (based on cropped dimensions)
+                // 2. Output size right after crop (based on cropped dimensions)
                 OutputSizeSection(originalResolution: file.resolution)
+                
+                // 3. Then output format
+                if file.isImage {
+                    OutputSection(detectedType: .image)
+                } else {
+                    VideoOutputFormatSection()
+                }
             }
         }
     }
@@ -498,6 +531,44 @@ enum ConversionTool: String, CaseIterable, Identifiable {
         case .trim: return "Cut out a specific part"
         case .gif: return "Create animated GIF from video"
         case .resize: return "Change dimensions or crop to aspect ratio"
+        }
+    }
+    
+    /// Check if a media type is compatible with this tool
+    func isCompatible(with mediaType: MediaType) -> Bool {
+        switch self {
+        case .convert:
+            // Convert accepts all media types
+            return true
+        case .compress:
+            // Compress only works with video
+            return mediaType == .video
+        case .extractAudio:
+            // Extract audio only works with video
+            return mediaType == .video
+        case .trim:
+            // Trim works with video and audio
+            return mediaType == .video || mediaType == .audio
+        case .gif:
+            // GIF only works with video
+            return mediaType == .video
+        case .resize:
+            // Resize works with video and images
+            return mediaType == .video || mediaType == .image
+        }
+    }
+    
+    /// Determine the best tool for a given media type
+    static func bestTool(for mediaType: MediaType) -> ConversionTool {
+        switch mediaType {
+        case .video:
+            return .convert
+        case .audio:
+            return .convert
+        case .image:
+            return .convert
+        case .unknown:
+            return .convert
         }
     }
 }
@@ -1676,18 +1747,22 @@ struct CropPreviewSection: View {
                                 cornerHandle()
                                 .position(x: handlePadding + cropRect.minX, y: handlePadding + cropRect.minY)
                                 .gesture(makeDragGesture(edge: .topLeft, size: insetSize))
+                                .onHover { h in updateCursor(h, Self.nwseCursor) }
                                 
                                 cornerHandle()
                                 .position(x: handlePadding + cropRect.maxX, y: handlePadding + cropRect.minY)
                                 .gesture(makeDragGesture(edge: .topRight, size: insetSize))
+                                .onHover { h in updateCursor(h, Self.neswCursor) }
                                 
                                 cornerHandle()
                                 .position(x: handlePadding + cropRect.minX, y: handlePadding + cropRect.maxY)
                                 .gesture(makeDragGesture(edge: .bottomLeft, size: insetSize))
+                                .onHover { h in updateCursor(h, Self.neswCursor) }
                                 
                                 cornerHandle()
                                 .position(x: handlePadding + cropRect.maxX, y: handlePadding + cropRect.maxY)
                                 .gesture(makeDragGesture(edge: .bottomRight, size: insetSize))
+                                .onHover { h in updateCursor(h, Self.nwseCursor) }
                             }
                         }
                         .aspectRatio(originalAspectRatio, contentMode: .fit)
@@ -2043,6 +2118,25 @@ struct CropPreviewSection: View {
             .contentShape(Circle().size(width: 28, height: 28))
     }
     
+    // Diagonal resize cursors (NW-SE and NE-SW)
+    private static let nwseCursor: NSCursor = {
+        // Create NW-SE diagonal resize cursor
+        if let cursor = NSCursor.perform(NSSelectorFromString("_windowResizeNorthWestSouthEastCursor"))?.takeUnretainedValue() as? NSCursor {
+            return cursor
+        }
+        // Fallback to crosshair if private API not available
+        return NSCursor.crosshair
+    }()
+    
+    private static let neswCursor: NSCursor = {
+        // Create NE-SW diagonal resize cursor
+        if let cursor = NSCursor.perform(NSSelectorFromString("_windowResizeNorthEastSouthWestCursor"))?.takeUnretainedValue() as? NSCursor {
+            return cursor
+        }
+        // Fallback to crosshair if private API not available
+        return NSCursor.crosshair
+    }()
+    
     // Update cursor helper
     private func updateCursor(_ hovering: Bool, _ cursor: NSCursor) {
         if hovering {
@@ -2360,6 +2454,17 @@ struct OutputSizeSection: View {
     let originalResolution: Resolution?
     
     @State private var selectedPreset: ResolutionOverride = .original
+    @State private var customWidth: Int = 1920
+    @State private var customHeight: Int = 1080
+    @State private var preserveRatio: Bool = true
+    @State private var isUpdatingFromRatio: Bool = false
+    @State private var scalePercentage: Double = 100
+    @State private var isUpdatingFromScale: Bool = false
+    
+    // Preset options (excluding "Custom" since we have manual fields)
+    private var presetOptions: [ResolutionOverride] {
+        ResolutionOverride.allCases.filter { $0 != .custom }
+    }
     
     // Computed cropped dimensions based on manager's crop settings
     private var croppedWidth: Int {
@@ -2372,15 +2477,47 @@ struct OutputSizeSection: View {
         return Int(Double(res.height) * (manager.advancedOptions.cropBottom - manager.advancedOptions.cropTop) / 100)
     }
     
+    // Source dimensions (cropped if there's cropping, otherwise original)
+    private var sourceWidth: Int {
+        manager.advancedOptions.hasCropping ? croppedWidth : (originalResolution?.width ?? 1920)
+    }
+    
+    private var sourceHeight: Int {
+        manager.advancedOptions.hasCropping ? croppedHeight : (originalResolution?.height ?? 1080)
+    }
+    
+    private var sourceAspectRatio: Double {
+        guard sourceHeight > 0 else { return 16.0 / 9.0 }
+        return Double(sourceWidth) / Double(sourceHeight)
+    }
+    
+    // Calculate current scale based on width
+    private var currentScale: Double {
+        guard sourceWidth > 0 else { return 100 }
+        return Double(customWidth) / Double(sourceWidth) * 100
+    }
+    
     var body: some View {
         OptionCard(title: "Output Size") {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
+                // Preset buttons (without Custom)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 75, maximum: 95), spacing: 8)], spacing: 8) {
-                    ForEach(ResolutionOverride.allCases) { preset in
+                    ForEach(presetOptions) { preset in
                         Button {
                             withAnimation(.spring(response: 0.2)) {
                                 selectedPreset = preset
                                 manager.advancedOptions.resolutionOverride = preset
+                                isUpdatingFromScale = true
+                                // Update custom fields when selecting a preset
+                                if let resolution = preset.resolution {
+                                    customWidth = resolution.width
+                                    customHeight = resolution.height
+                                } else if preset == .original {
+                                    customWidth = sourceWidth
+                                    customHeight = sourceHeight
+                                }
+                                scalePercentage = currentScale
+                                isUpdatingFromScale = false
                             }
                         } label: {
                             Text(preset.rawValue)
@@ -2397,16 +2534,153 @@ struct OutputSizeSection: View {
                     }
                 }
                 
-                // Show cropped dimensions (or original if no cropping)
+                // Scale slider - primary interaction
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Scale")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        // Quick scale buttons
+                        HStack(spacing: 4) {
+                            ForEach([25, 50, 100, 150, 200], id: \.self) { pct in
+                                Button {
+                                    withAnimation(.spring(response: 0.2)) {
+                                        scalePercentage = Double(pct)
+                                        applyScale()
+                                    }
+                                } label: {
+                                    Text("\(pct)%")
+                                        .font(.system(size: 9, weight: .medium))
+                                        .foregroundColor(abs(scalePercentage - Double(pct)) < 1 ? .white : .secondary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background {
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(abs(scalePercentage - Double(pct)) < 1 ? Color(hex: "3B82F6") : .primary.opacity(0.05))
+                                        }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    
+                    // Slider with percentage display
+                    HStack(spacing: 12) {
+                        Slider(value: $scalePercentage, in: 10...300, step: 1)
+                            .tint(Color(hex: "3B82F6"))
+                            .onChange(of: scalePercentage) { _, _ in
+                                guard !isUpdatingFromScale else { return }
+                                applyScale()
+                            }
+                        
+                        // Editable percentage field
+                        HStack(spacing: 2) {
+                            TextField("", value: $scalePercentage, format: .number.precision(.fractionLength(0)))
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .frame(width: 36)
+                                .multilineTextAlignment(.trailing)
+                                .onChange(of: scalePercentage) { _, newValue in
+                                    guard !isUpdatingFromScale else { return }
+                                    // Clamp to valid range
+                                    let clamped = min(max(newValue, 10), 300)
+                                    if clamped != newValue {
+                                        scalePercentage = clamped
+                                    }
+                                    applyScale()
+                                }
+                            Text("%")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(.primary.opacity(0.04))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(.primary.opacity(0.08), lineWidth: 1)
+                                }
+                        }
+                    }
+                }
+                
+                // Dimensions row - compact layout
+                HStack(spacing: 12) {
+                    // Dimensions display/edit
+                    HStack(spacing: 8) {
+                        // Width field
+                        DimensionField(label: "W", value: $customWidth)
+                            .onChange(of: customWidth) { oldValue, newValue in
+                                guard !isUpdatingFromRatio && !isUpdatingFromScale else { return }
+                                if preserveRatio && oldValue != newValue {
+                                    isUpdatingFromRatio = true
+                                    customHeight = max(1, Int(Double(newValue) / sourceAspectRatio))
+                                    isUpdatingFromRatio = false
+                                }
+                                isUpdatingFromScale = true
+                                scalePercentage = currentScale
+                                isUpdatingFromScale = false
+                                updateCustomResolution()
+                            }
+                        
+                        Text("×")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                        
+                        // Height field
+                        DimensionField(label: "H", value: $customHeight)
+                            .onChange(of: customHeight) { oldValue, newValue in
+                                guard !isUpdatingFromRatio && !isUpdatingFromScale else { return }
+                                if preserveRatio && oldValue != newValue {
+                                    isUpdatingFromRatio = true
+                                    customWidth = max(1, Int(Double(newValue) * sourceAspectRatio))
+                                    isUpdatingFromRatio = false
+                                }
+                                isUpdatingFromScale = true
+                                scalePercentage = currentScale
+                                isUpdatingFromScale = false
+                                updateCustomResolution()
+                            }
+                    }
+                    
+                    Spacer()
+                    
+                    // Preserve ratio toggle - compact
+                    Button {
+                        preserveRatio.toggle()
+                    } label: {
+                        Image(systemName: preserveRatio ? "lock.fill" : "lock.open")
+                            .font(.system(size: 12))
+                            .foregroundColor(preserveRatio ? Color(hex: "3B82F6") : .secondary)
+                            .frame(width: 28, height: 28)
+                            .background {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(preserveRatio ? Color(hex: "3B82F6").opacity(0.15) : .primary.opacity(0.04))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .strokeBorder(preserveRatio ? Color(hex: "3B82F6").opacity(0.3) : .primary.opacity(0.08), lineWidth: 1)
+                                    }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help(preserveRatio ? "Aspect ratio locked" : "Aspect ratio unlocked")
+                }
+                
+                // Show source dimensions info
                 if originalResolution != nil {
                     HStack(spacing: 6) {
                         Image(systemName: "info.circle")
                             .font(.system(size: 10))
                         if manager.advancedOptions.hasCropping {
-                            Text("Original: \(croppedWidth.formatted())×\(croppedHeight.formatted()) (cropped)")
+                            Text("Source: \(sourceWidth)×\(sourceHeight) (cropped)")
                                 .font(.system(size: 11))
-                        } else if let res = originalResolution {
-                            Text("Original: \(res.description)")
+                        } else {
+                            Text("Source: \(sourceWidth)×\(sourceHeight)")
                                 .font(.system(size: 11))
                         }
                     }
@@ -2416,6 +2690,62 @@ struct OutputSizeSection: View {
         }
         .onAppear {
             selectedPreset = manager.advancedOptions.resolutionOverride
+            // Initialize custom fields with source dimensions
+            customWidth = sourceWidth
+            customHeight = sourceHeight
+            if let customRes = manager.advancedOptions.customResolution {
+                customWidth = customRes.width
+                customHeight = customRes.height
+            }
+            scalePercentage = currentScale
+        }
+    }
+    
+    private func applyScale() {
+        isUpdatingFromRatio = true
+        customWidth = max(1, Int(Double(sourceWidth) * scalePercentage / 100))
+        customHeight = max(1, Int(Double(sourceHeight) * scalePercentage / 100))
+        isUpdatingFromRatio = false
+        updateCustomResolution()
+    }
+    
+    private func updateCustomResolution() {
+        // Switch to custom mode when user edits dimensions
+        if selectedPreset != .custom {
+            selectedPreset = .custom
+            manager.advancedOptions.resolutionOverride = .custom
+        }
+        manager.advancedOptions.customResolution = Resolution(width: customWidth, height: customHeight)
+    }
+}
+
+// MARK: - Dimension Field Component
+
+private struct DimensionField: View {
+    let label: String
+    @Binding var value: Int
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
+            
+            TextField("", value: $value, format: .number)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .frame(minWidth: 45)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.primary.opacity(0.04))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(.primary.opacity(0.08), lineWidth: 1)
+                }
         }
     }
 }

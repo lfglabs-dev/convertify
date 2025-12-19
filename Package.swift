@@ -21,7 +21,8 @@ let package = Package(
             path: "Convertify",
             exclude: [
                 "Info.plist",
-                "Convertify.entitlements"
+                "Convertify.entitlements",
+                "AppIcon.icon"
             ],
             resources: [
                 .process("Assets.xcassets")

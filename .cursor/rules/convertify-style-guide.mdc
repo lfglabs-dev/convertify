@@ -441,6 +441,67 @@ withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { ... }
 
 ---
 
+## App Icons (.icon Format)
+
+### Apple's Icon Composer Format
+
+Convertify uses Apple's `.icon` format for app icons. This is a multi-layer icon format introduced with Icon Composer that supports:
+
+- **Liquid Glass effects** — Dynamic depth, translucency, and specular highlights
+- **Multiple appearances** — Default, Dark, and Tinted modes in a single file
+- **Platform-specific rendering** — Automatic adaptation for iOS, macOS, watchOS
+
+### Icon Structure
+
+```
+Convertify/
+├── AppIcon.icon/                  # Added directly to Xcode project (NOT in Assets.xcassets)
+│   ├── Assets/
+│   │   └── clean_convertify.png   # The logo layer (transparent PNG, no rounded rect)
+│   └── icon.json                  # Icon configuration (layers, effects, fill)
+└── Assets.xcassets/
+    └── AccentColor.colorset/      # Asset catalog for other assets (NOT for app icon)
+```
+
+### How It Works
+
+1. **Add `.icon` to Xcode project** — NOT in Assets.xcassets, just as a regular file with target membership
+2. **Set App Icon name** — `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` (matches `AppIcon.icon` without extension)
+3. **Xcode uses `.icon` directly** — Liquid Glass effects preserved, no PNG generation needed
+
+### Editing the Icon
+
+1. Open `Convertify/AppIcon.icon` in **Icon Composer** (Apple's app)
+2. Adjust layers, Liquid Glass effects, and appearance modes
+3. Save the `.icon` file
+4. Rebuild in Xcode — icons are automatically applied
+
+### Critical Rules for .icon Files
+
+1. **Do NOT include platform masks** — No rounded rects/circles in your artwork
+2. **Background must be full-bleed** — Fill the entire canvas, no transparent padding
+3. **Do NOT put .icon in Assets.xcassets** — Add as a regular project file
+4. **Name must match build setting** — `AppIcon.icon` → `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`
+
+### For build-app.sh (CLI builds)
+
+`build-app.sh` uses **xcodebuild** so the `.icon` is used directly (no PNG flattening step).
+
+If the Dock is still showing an old icon, clear caches by removing the app from the Dock,
+quitting the app, and running `killall Dock` (then rebuild).
+
+If you see an overly strong “border” highlight, reduce the specular rim in Icon Composer
+or set `"specular": false` in `Convertify/AppIcon.icon/icon.json`.
+
+### Why .icon Format?
+
+- **Liquid Glass preserved** — Xcode uses the layered icon directly
+- **No PNG generation** — Single source of truth
+- **Automatic adaptation** — Works across appearances (light/dark) and platforms
+- **No Photoshop needed** — Icon Composer handles all effects
+
+---
+
 ## File Structure
 
 ```
@@ -468,7 +529,8 @@ Convertify/
 │   ├── DropZoneView.swift
 │   ├── AdvancedOptionsView.swift
 │   └── ProgressOverlayView.swift
-└── Assets.xcassets/
+├── Assets.xcassets/             # Asset catalog (AccentColor only, NOT app icon)
+├── AppIcon.icon/                # Liquid Glass icon (added directly to project)
 ```
 
 ---

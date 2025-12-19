@@ -341,6 +341,12 @@ func testConversion(inputURL: URL, outputURL: URL) {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private let trafficLights = TrafficLightsPositioner(offsetX: 19, offsetY: -15)
     
+    /// URLs to open when the app launches (passed via command line or Finder)
+    static var pendingURLs: [URL] = []
+    
+    /// Callback to notify ContentView of files to open
+    static var onOpenURLs: (([URL]) -> Void)?
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
         
@@ -349,6 +355,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.configureWindow(window)
                 window.makeKeyAndOrderFront(nil)
             }
+            
+            // Process any pending URLs after UI is ready
+            if !AppDelegate.pendingURLs.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    AppDelegate.onOpenURLs?(AppDelegate.pendingURLs)
+                    AppDelegate.pendingURLs.removeAll()
+                }
+            }
+        }
+    }
+    
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        let url = URL(fileURLWithPath: filename)
+        debugLog("Open file request: \(filename)")
+        
+        if AppDelegate.onOpenURLs != nil {
+            AppDelegate.onOpenURLs?([url])
+        } else {
+            // App not fully initialized yet, queue the URL
+            AppDelegate.pendingURLs.append(url)
+        }
+        return true
+    }
+    
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let urls = filenames.map { URL(fileURLWithPath: $0) }
+        debugLog("Open files request: \(filenames)")
+        
+        if AppDelegate.onOpenURLs != nil {
+            AppDelegate.onOpenURLs?(urls)
+        } else {
+            // App not fully initialized yet, queue the URLs
+            AppDelegate.pendingURLs.append(contentsOf: urls)
         }
     }
     
@@ -768,6 +807,17 @@ class ConversionManager: ObservableObject {
         conversionJob = nil
         isConverting = false
         advancedOptions = AdvancedOptions()
+    }
+    
+    /// Resets only tool-specific options while keeping the loaded file
+    func resetToolOptions() {
+        conversionJob = nil
+        isConverting = false
+        advancedOptions = AdvancedOptions()
+        // Re-select default format based on current file
+        if let file = inputFile {
+            selectDefaultFormat(for: file)
+        }
     }
     
     /// Shows a save panel for the user to select output location (required for sandbox permissions)

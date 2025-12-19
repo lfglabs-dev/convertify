@@ -28,6 +28,7 @@
 		APP019 /* TranscodingPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC019 /* TranscodingPipeline.swift */; };
 		APP020 /* GlassBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC020 /* GlassBackground.swift */; };
 		APP021 /* HeadlessCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC021 /* HeadlessCLI.swift */; };
+		APP022 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = ICN001 /* AppIcon.icon */; };
 		FWK002 /* FFmpegKit in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001 /* FFmpegKit */; };
 /* End PBXBuildFile section */
 
@@ -36,6 +37,7 @@
 		CFG002 /* Convertify.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Convertify.entitlements; sourceTree = "<group>"; };
 		PRD001 /* Convertify.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Convertify.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		RES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ICN001 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AppIcon.icon; sourceTree = "<group>"; };
 		SRC001 /* ConvertifyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertifyApp.swift; sourceTree = "<group>"; };
 		SRC002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		SRC004 /* MediaFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaFile.swift; sourceTree = "<group>"; };
@@ -89,6 +91,7 @@
 				GRP006 /* Utilities */,
 				GRP007 /* FFmpegKit */,
 				RES001 /* Assets.xcassets */,
+				ICN001 /* AppIcon.icon */,
 				CFG001 /* Info.plist */,
 				CFG002 /* Convertify.entitlements */,
 			);
@@ -230,6 +233,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				APP003 /* Assets.xcassets in Resources */,
+				APP022 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -417,7 +421,7 @@
 				CODE_SIGN_ENTITLEMENTS = Convertify/Convertify.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_APP_SANDBOX = YES;
@@ -431,7 +435,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = md.thomas.convertify;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -448,7 +452,7 @@
 				CODE_SIGN_ENTITLEMENTS = Convertify/Convertify.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_APP_SANDBOX = YES;
@@ -462,7 +466,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = md.thomas.convertify;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
